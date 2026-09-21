@@ -120,9 +120,44 @@ async function fetchPage(path: string, options: FetchPageOptions = {}): Promise<
     fullUrl = urlObj.toString();
   }
 
-  // 0. Check for proxy / scraper gateway (defaults to deployed Cloudflare Worker)
+  // -1. FlareSolverr: Real Chromium browser bypass — defeats JA3 + Turnstile completely.
+  //     Deploy FlareSolverr (Docker) on Render free tier and set FLARESOLVERR_URL.
+  //     See: https://github.com/FlareSolverr/FlareSolverr
+  const FLARESOLVERR_URL = process.env.FLARESOLVERR_URL;
+  if (FLARESOLVERR_URL) {
+    try {
+      const solverController = new AbortController();
+      const solverTimer = setTimeout(() => solverController.abort(), 60000); // FlareSolverr can take up to 30s
+      const solverResp = await fetch(`${FLARESOLVERR_URL.replace(/\/$/, "")}/v1`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cmd: isAjax ? "request.get" : "request.get",
+          url: fullUrl,
+          maxTimeout: 55000,
+        }),
+        signal: solverController.signal,
+      });
+      clearTimeout(solverTimer);
+      if (solverResp.ok) {
+        const solverJson = await solverResp.json() as any;
+        if (solverJson.status === "ok" && solverJson.solution?.response) {
+          const solverText: string = solverJson.solution.response;
+          if (!solverText.includes("Just a moment...") && !solverText.includes("cf-browser-verification")) {
+            return solverText;
+          }
+          console.warn("FlareSolverr returned a Cloudflare challenge page:", fullUrl);
+        }
+      }
+    } catch (solverErr: any) {
+      console.warn(`FlareSolverr failed (${solverErr.message}), falling through to Worker proxy.`);
+    }
+  }
+
+  // 0. Cloudflare Worker proxy / scraper gateway (defaults to built-in Worker)
   const DEFAULT_PROXY_URL = "https://animesalt-proxy.v1nx.workers.dev";
   const proxyGateway = process.env.PROXY_URL || process.env.SCRAPER_PROXY || DEFAULT_PROXY_URL;
+
 
   if (proxyGateway) {
     try {
@@ -130,13 +165,11 @@ async function fetchPage(path: string, options: FetchPageOptions = {}): Promise<
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 12000);
 
+      // Send NO custom headers to the Worker — any Node.js headers (User-Agent, sec-ch-ua, etc.)
+      // can tip off Cloudflare's WAF that the caller is a data-center bot via TLS JA3 fingerprinting.
+      // The Worker script itself injects clean browser-like headers for the upstream animesalt.cx fetch.
       const proxyResp = await fetch(proxiedUrl, {
         method: "GET",
-        headers: {
-          "User-Agent": CHROME_HEADERS["User-Agent"],
-          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-          "Accept-Language": "en-US,en;q=0.9",
-        },
         signal: controller.signal,
       });
       clearTimeout(timer);
