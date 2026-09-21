@@ -133,6 +133,7 @@ async function fetchPage(path: string, options: FetchPageOptions = {}): Promise<
       const proxyResp = await fetch(proxiedUrl, {
         method: "GET",
         headers: {
+          "User-Agent": CHROME_HEADERS["User-Agent"],
           "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
           "Accept-Language": "en-US,en;q=0.9",
         },
