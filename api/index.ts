@@ -132,7 +132,10 @@ async function fetchPage(path: string, options: FetchPageOptions = {}): Promise<
 
       const proxyResp = await fetch(proxiedUrl, {
         method: "GET",
-        headers: isAjax ? AJAX_HEADERS : CHROME_HEADERS,
+        headers: {
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "Accept-Language": "en-US,en;q=0.9",
+        },
         signal: controller.signal,
       });
       clearTimeout(timer);
