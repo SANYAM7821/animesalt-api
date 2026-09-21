@@ -15,10 +15,11 @@ const BASE_URL = "https://animesalt.cx";
 const CHROME_HEADERS: Record<string, string> = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
   "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-  "Accept-Language": "en-US,en;q=0.9",
-  "Accept-Encoding": "gzip, deflate",
+  "Accept-Language": "en-US,en;q=0.9,hi;q=0.8",
+  "Accept-Encoding": "gzip, deflate, br",
   "Cache-Control": "max-age=0",
   "Referer": "https://animesalt.cx/",
+  "Connection": "keep-alive",
   "sec-ch-ua": '"Not(A:Brand";v="99", "Google Chrome";v="133", "Chromium";v="133"',
   "sec-ch-ua-mobile": "?0",
   "sec-ch-ua-platform": '"Windows"',
@@ -34,13 +35,15 @@ const MINIMAL_HEADERS: Record<string, string> = {
   "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
   "Accept-Language": "en-US,en;q=0.9",
   "Referer": "https://animesalt.cx/",
+  "sec-ch-ua": '"Not(A:Brand";v="99", "Google Chrome";v="133", "Chromium";v="133"',
+  "sec-ch-ua-platform": '"Windows"',
 };
 
 const AJAX_HEADERS: Record<string, string> = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
   "Accept": "*/*",
   "Accept-Language": "en-US,en;q=0.9",
-  "Accept-Encoding": "gzip, deflate",
+  "Accept-Encoding": "gzip, deflate, br",
   "X-Requested-With": "XMLHttpRequest",
   "Referer": "https://animesalt.cx/",
   "sec-ch-ua": '"Not(A:Brand";v="99", "Google Chrome";v="133", "Chromium";v="133"',
@@ -119,7 +122,8 @@ async function fetchPage(path: string, options: FetchPageOptions = {}): Promise<
 
   // 0. Check for proxy / scraper gateway (defaults to deployed Cloudflare Worker)
   const DEFAULT_PROXY_URL = "https://animesalt-proxy.v1nx.workers.dev";
-  const proxyGateway = process.env.SCRAPER_PROXY || process.env.PROXY_URL || DEFAULT_PROXY_URL;
+  const proxyGateway = process.env.PROXY_URL || process.env.SCRAPER_PROXY || DEFAULT_PROXY_URL;
+
   if (proxyGateway) {
     try {
       const proxiedUrl = buildProxyUrl(proxyGateway, fullUrl);
@@ -135,10 +139,14 @@ async function fetchPage(path: string, options: FetchPageOptions = {}): Promise<
 
       if (proxyResp.ok) {
         const text = await proxyResp.text();
-        if (!text.includes("Just a moment...") && !text.includes("cf-browser-verification")) {
+        if (!text.includes("Just a moment...") && !text.includes("cf-browser-verification") && !text.includes("Checking your browser")) {
           return text;
         }
-        console.warn(`Proxy gateway returned Cloudflare challenge on: ${proxiedUrl}`);
+        console.warn(`Proxy gateway (${proxyGateway}) returned Cloudflare challenge on: ${proxiedUrl}`);
+        // If the proxy is challenged, don't fall back to direct fetch if on Render/Vercel
+        if (process.env.NODE_ENV === "production") {
+          throw new Error(`Proxy gateway is being challenged by Cloudflare. Please update your Worker script.`);
+        }
       } else if (proxyResp.status === 404) {
         const notFoundErr: any = new Error("Page not found (404)");
         notFoundErr.status = 404;
@@ -147,7 +155,7 @@ async function fetchPage(path: string, options: FetchPageOptions = {}): Promise<
         console.warn(`Proxy gateway returned status ${proxyResp.status} on: ${proxiedUrl}`);
       }
     } catch (proxyErr: any) {
-      if (proxyErr.status === 404) throw proxyErr;
+      if (proxyErr.status === 404 || proxyErr.message.includes("Please update your Worker script")) throw proxyErr;
       console.warn(`Proxy gateway request failed (${proxyErr.message}) on: ${proxyGateway}`);
     }
   }
@@ -440,13 +448,13 @@ router.get("/health", async (_req, res) => {
 // Diagnostic / Debug endpoint for inspecting upstream connectivity & Cloudflare status
 router.get("/debug", async (_req, res) => {
   const DEFAULT_PROXY_URL = "https://animesalt-proxy.v1nx.workers.dev";
-  const proxyGateway = process.env.SCRAPER_PROXY || process.env.PROXY_URL || DEFAULT_PROXY_URL;
+  const proxyGateway = process.env.PROXY_URL || process.env.SCRAPER_PROXY || DEFAULT_PROXY_URL;
   const result: any = {
     timestamp: new Date().toISOString(),
     vercelRegion: process.env.VERCEL_REGION || "local",
     nodeVersion: process.version,
     target: BASE_URL,
-    configuredProxyUrl: proxyGateway ? (proxyGateway.slice(0, 45) + "...") : null,
+    configuredProxyUrl: proxyGateway,
   };
 
   // 1. Diagnostic test on configured proxy
