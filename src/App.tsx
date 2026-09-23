@@ -552,7 +552,7 @@ export default function App() {
                 </span>
                 <span className="text-[10px] text-emerald-400 flex items-center gap-1 font-mono">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                  animesalt.cx connected
+                  animesalt.me connected
                 </span>
               </div>
             </button>
@@ -636,7 +636,7 @@ export default function App() {
                 </h1>
                 <p className="text-xs text-slate-400">
                   Real-time scraper inspector • 12 Production Endpoints • Upstream Target:{" "}
-                  <code className="text-cyan-400 font-mono">https://animesalt.cx</code>
+                  <code className="text-cyan-400 font-mono">https://animesalt.me</code>
                 </p>
               </div>
             </div>
@@ -1036,7 +1036,7 @@ export default function App() {
                   {consoleLoading ? (
                     <div className="flex flex-col items-center justify-center py-24 gap-3 text-indigo-400">
                       <div className="w-10 h-10 border-4 border-indigo-500/20 border-t-indigo-500 rounded-full animate-spin"></div>
-                      <span className="text-xs font-medium">Scraping from animesalt.cx...</span>
+                      <span className="text-xs font-medium">Scraping from animesalt.me...</span>
                     </div>
                   ) : !consoleResponse ? (
                     <div className="text-center py-24 text-slate-500 space-y-2">
@@ -1757,7 +1757,7 @@ print(data)`}
                     {activeTab === "search" ? `Search: "${searchQuery}"` : activeTab.replace("-", " ")}
                   </h2>
                   <p className="text-xs text-slate-400 mt-1">
-                    Scraped in real-time from animesalt.cx • {items.length} titles loaded
+                    Scraped in real-time from animesalt.me • {items.length} titles loaded
                   </p>
                 </div>
               </div>

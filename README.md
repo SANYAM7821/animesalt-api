@@ -11,7 +11,7 @@
 [![GitHub stars](https://img.shields.io/github/stars/imvinx/animesalt-api?logo=github&color=gold)](https://github.com/imvinx/animesalt-api/stargazers)
 [![License](https://img.shields.io/badge/License-Apache--2.0-blue)](./LICENSE)
 
-**A high-performance, real-time scraping API and interactive streaming web platform powered by [animesalt.cx](https://animesalt.cx). Built with resilient Cloudflare edge routing, multi-season AJAX episode discovery, and multi-language audio stream decoding.**
+**A high-performance, real-time scraping API and interactive streaming web platform powered by [animesalt.me](https://animesalt.me). Built with resilient Cloudflare edge routing, multi-season AJAX episode discovery, and multi-language audio stream decoding.**
 
 ---
 
@@ -196,7 +196,7 @@ Render provides easy deployment for Web Services.
 ## 🛡️ Cloudflare Bypass & Proxy Setup Guide (Essential for Vercel)
 
 ### Why Cloudflare Challenges Cloud Hosts
-When you run this project **locally on your computer**, requests to `https://animesalt.cx` connect directly with 100% success because residential home internet connections are trusted.
+When you run this project **locally on your computer**, requests to `https://animesalt.me` connect directly with 100% success because residential home internet connections are trusted.
 
 However, when deployed on **Vercel, AWS Lambda, Railway, or Render**, Cloudflare's Super Bot Fight Mode detects data-center IP addresses and serves an interactive JavaScript challenge:
 ```html
@@ -244,17 +244,17 @@ export default {
   async fetch(request) {
     const url = new URL(request.url);
 
-    // 1. Support query parameter: ?url=https://animesalt.cx/...
+    // 1. Support query parameter: ?url=https://animesalt.me/...
     let target = url.searchParams.get("url");
 
-    // 2. Support path-based target: /https://animesalt.cx/...
+    // 2. Support path-based target: /https://animesalt.me/...
     if (!target && url.pathname.startsWith("/http")) {
       target = url.pathname.slice(1) + url.search;
     }
 
-    // 3. Support direct reverse proxy path: /series/naruto/ or /wp-admin/...
+    // 3. Support direct reverse proxy path: /tv/naruto/ or /wp-admin/...
     if (!target) {
-      target = "https://animesalt.cx" + url.pathname + url.search;
+      target = "https://animesalt.me" + url.pathname + url.search;
     }
 
     try {
@@ -264,7 +264,7 @@ export default {
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
           "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
           "Accept-Language": "en-US,en;q=0.9",
-          "Referer": "https://animesalt.cx/",
+          "Referer": "https://animesalt.me/",
         },
       });
 

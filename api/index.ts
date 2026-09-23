@@ -9,16 +9,15 @@ const router = express.Router();
 app.use(cors());
 app.use(express.json());
 
-const BASE_URL = "https://animesalt.cx";
+const BASE_URL = "https://animesalt.me";
 
 // Modern Chrome 133 client headers to bypass Cloudflare Bot Management & WAF
 const CHROME_HEADERS: Record<string, string> = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
   "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
   "Accept-Language": "en-US,en;q=0.9,hi;q=0.8",
-  "Accept-Encoding": "gzip, deflate, br",
   "Cache-Control": "max-age=0",
-  "Referer": "https://animesalt.cx/",
+  "Referer": "https://animesalt.me/",
   "Connection": "keep-alive",
   "sec-ch-ua": '"Not(A:Brand";v="99", "Google Chrome";v="133", "Chromium";v="133"',
   "sec-ch-ua-mobile": "?0",
@@ -34,7 +33,7 @@ const MINIMAL_HEADERS: Record<string, string> = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
   "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
   "Accept-Language": "en-US,en;q=0.9",
-  "Referer": "https://animesalt.cx/",
+  "Referer": "https://animesalt.me/",
   "sec-ch-ua": '"Not(A:Brand";v="99", "Google Chrome";v="133", "Chromium";v="133"',
   "sec-ch-ua-platform": '"Windows"',
 };
@@ -45,7 +44,7 @@ const AJAX_HEADERS: Record<string, string> = {
   "Accept-Language": "en-US,en;q=0.9",
   "Accept-Encoding": "gzip, deflate, br",
   "X-Requested-With": "XMLHttpRequest",
-  "Referer": "https://animesalt.cx/",
+  "Referer": "https://animesalt.me/",
   "sec-ch-ua": '"Not(A:Brand";v="99", "Google Chrome";v="133", "Chromium";v="133"',
   "sec-ch-ua-mobile": "?0",
   "sec-ch-ua-platform": '"Windows"',
@@ -92,7 +91,6 @@ function buildProxyUrl(gateway: string, targetUrl: string): string {
     return `${cleanGateway}${encodeURIComponent(targetUrl)}`;
   }
   // Reverse proxy style (e.g. Cloudflare Worker https://my-worker.workers.dev)
-  // Appends path and query parameters: /series/naruto/?page=2
   try {
     const parsed = new URL(targetUrl);
     return `${cleanGateway}${parsed.pathname}${parsed.search}`;
@@ -121,18 +119,16 @@ async function fetchPage(path: string, options: FetchPageOptions = {}): Promise<
   }
 
   // -1. FlareSolverr: Real Chromium browser bypass — defeats JA3 + Turnstile completely.
-  //     Deploy FlareSolverr (Docker) on Render free tier and set FLARESOLVERR_URL.
-  //     See: https://github.com/FlareSolverr/FlareSolverr
   const FLARESOLVERR_URL = process.env.FLARESOLVERR_URL;
   if (FLARESOLVERR_URL) {
     try {
       const solverController = new AbortController();
-      const solverTimer = setTimeout(() => solverController.abort(), 60000); // FlareSolverr can take up to 30s
+      const solverTimer = setTimeout(() => solverController.abort(), 60000);
       const solverResp = await fetch(`${FLARESOLVERR_URL.replace(/\/$/, "")}/v1`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          cmd: isAjax ? "request.get" : "request.get",
+          cmd: "request.get",
           url: fullUrl,
           maxTimeout: 55000,
         }),
@@ -154,10 +150,8 @@ async function fetchPage(path: string, options: FetchPageOptions = {}): Promise<
     }
   }
 
-  // 0. Cloudflare Worker proxy / scraper gateway (defaults to built-in Worker)
-  const DEFAULT_PROXY_URL = "https://animesalt-proxy.v1nx.workers.dev";
-  const proxyGateway = process.env.PROXY_URL || process.env.SCRAPER_PROXY || DEFAULT_PROXY_URL;
-
+  // 0. Cloudflare Worker proxy / scraper gateway
+  const proxyGateway = process.env.PROXY_URL || process.env.SCRAPER_PROXY || "";
 
   if (proxyGateway) {
     try {
@@ -165,9 +159,6 @@ async function fetchPage(path: string, options: FetchPageOptions = {}): Promise<
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 12000);
 
-      // Send NO custom headers to the Worker — any Node.js headers (User-Agent, sec-ch-ua, etc.)
-      // can tip off Cloudflare's WAF that the caller is a data-center bot via TLS JA3 fingerprinting.
-      // The Worker script itself injects clean browser-like headers for the upstream animesalt.cx fetch.
       const proxyResp = await fetch(proxiedUrl, {
         method: "GET",
         signal: controller.signal,
@@ -180,7 +171,6 @@ async function fetchPage(path: string, options: FetchPageOptions = {}): Promise<
           return text;
         }
         console.warn(`Proxy gateway (${proxyGateway}) returned Cloudflare challenge on: ${proxiedUrl}`);
-        // If the proxy is challenged, don't fall back to direct fetch if on Render/Vercel
         if (process.env.NODE_ENV === "production") {
           throw new Error(`Proxy gateway is being challenged by Cloudflare. Please update your Worker script.`);
         }
@@ -276,35 +266,38 @@ function extractAnimeList(html: string) {
   const $ = cheerio.load(html);
   const results: any[] = [];
 
-  $("article.post, .result-item article, .items article").each((_, el) => {
+  $("article.post, article.tv, .result-item article, .items article, article").each((_, el) => {
     const linkEl = $(el).find("a.lnk-blk").first();
     let url = linkEl.attr("href") || $(el).find("a").first().attr("href") || "";
 
-    // Extract slug from URL like /series/naruto/ or /movies/some-movie/
-    const slugMatch = url.match(/\/(series|movies)\/([^/]+)\/?$/);
+    // Extract slug from URL like /tv/naruto/, /series/naruto/, or /movies/some-movie/
+    const slugMatch = url.match(/\/(tv|series|movies)\/([^/]+)\/?$/);
     const id = slugMatch ? slugMatch[2] : url.replace(/.*\//, "").replace(/\/$/, "");
 
-    if (!id) return;
+    if (!id || id.includes("page") || id === "feed" || id === "tv" || id === "movies") return;
 
     const title = $(el).find("h2.entry-title, h3.entry-title, .entry-title").text().trim() ||
                   $(el).find("img").attr("alt")?.replace(/^Image\s+/i, "").trim() || "";
 
-    let image = $(el).find("img").attr("data-src") || $(el).find("img").attr("src") || "";
+    let image = $(el).find("img").attr("data-src") || $(el).find("img").attr("src") || $(el).find("img").attr("data-lazy-src") || "";
     if (image && image.startsWith("//")) image = "https:" + image;
 
-    const type = slugMatch ? slugMatch[1] : null; // "series" or "movies"
+    const rawType = slugMatch ? slugMatch[1] : null; // "tv", "series" or "movies"
+    const type = rawType === "tv" ? "series" : rawType;
     const quality = $(el).find(".post-ql, .quality, .ql").text().trim() || null;
     const year = $(el).find(".year, .date, .time").text().trim() || null;
 
-    results.push({
-      id,
-      title,
-      image,
-      type,
-      quality,
-      year,
-      url: url || null,
-    });
+    if (!results.find(r => r.id === id)) {
+      results.push({
+        id,
+        title,
+        image,
+        type,
+        quality,
+        year,
+        url: url || null,
+      });
+    }
   });
 
   return results;
@@ -322,11 +315,12 @@ function extractPopularItems(html: string, targetType?: string) {
     const linkEl = $(el).find("a.chart-poster, a").first();
     const url = linkEl.attr("href") || "";
 
-    const slugMatch = url.match(/\/(series|movies)\/([^/]+)\/?$/);
+    const slugMatch = url.match(/\/(tv|series|movies)\/([^/]+)\/?$/);
     const id = slugMatch ? slugMatch[2] : "";
     if (!id) return;
 
-    const type = slugMatch ? slugMatch[1] : null;
+    const rawType = slugMatch ? slugMatch[1] : null;
+    const type = rawType === "tv" ? "series" : rawType;
     if (targetType && type && type !== targetType) return;
 
     const title = $(el).find(".chart-title").text().trim() ||
@@ -353,9 +347,88 @@ function extractPopularItems(html: string, targetType?: string) {
   return results;
 }
 
-// Helper: Fetch episodes for a series (supports specific season or all seasons via AJAX)
+// Helper: Parse episodes from page HTML (supports .ep-tile buttons & legacy a[href*='/episode/'])
+function parseEpisodesFromPage(htmlContent: string, defaultSeasonNum: number = 1) {
+  const $ = cheerio.load(htmlContent);
+  const eps: any[] = [];
+
+  // Strategy 1: .ep-tile buttons (AnimeSalt v2 schema with embedded server JSON)
+  $(".ep-tile").each((_, el) => {
+    const slug = $(el).attr("data-slug") || "";
+    const epName = $(el).text().trim() || $(el).attr("data-name") || "";
+    const numMatch = epName.match(/(\d+)/) || slug.match(/ep-(\d+)/);
+    const epNum = numMatch ? parseInt(numMatch[1], 10) : 0;
+
+    const onclick = $(el).attr("onclick") || "";
+    let servers: any[] = [];
+
+    const jsonMatch = onclick.match(/triggerEpisode\s*\(\s*(\[.*?\])\s*,\s*["']/s);
+    if (jsonMatch && jsonMatch[1]) {
+      try {
+        const jsonStr = jsonMatch[1].replace(/\\([\\"'/])/g, "$1");
+        servers = JSON.parse(jsonStr);
+      } catch {
+        const urls = Array.from(onclick.matchAll(/"url"\s*:\s*"([^"]+)"/g)).map(m => m[1].replace(/\\/g, ""));
+        servers = urls.map(u => ({ url: u }));
+      }
+    }
+
+    if (epNum > 0 || slug) {
+      eps.push({
+        num: epNum,
+        season: defaultSeasonNum,
+        title: epName,
+        slug: slug || `ep-${epNum}`,
+        servers,
+      });
+    }
+  });
+
+  // Strategy 2: Legacy ToroFilm a[href*='/episode/']
+  if (eps.length === 0) {
+    $("a[href*='/episode/']").each((_, a) => {
+      const href = $(a).attr("href") || "";
+      const m = href.match(/\/episode\/([^/]+)\/?$/);
+      const epSlug = m ? m[1] : "";
+      if (!epSlug) return;
+
+      const sxe = epSlug.match(/(\d+)x(\d+)$/);
+      const sNum = sxe ? parseInt(sxe[1], 10) : defaultSeasonNum;
+      const epNum = sxe ? parseInt(sxe[2], 10) : 0;
+      if (epNum === 0) return;
+
+      const title = $(a).closest("li, article, .item, div").find(".entry-title, .title").text().trim() ||
+                    $(a).text().trim().replace(/^\d+\s*/, "").replace(/\s*View\s*$/i, "").trim() ||
+                    `Episode ${epNum}`;
+
+      if (!eps.find(e => e.slug === epSlug)) {
+        eps.push({
+          num: epNum,
+          season: sNum,
+          title,
+          slug: epSlug,
+          url: href,
+        });
+      }
+    });
+  }
+
+  return eps;
+}
+
+// Helper: Fetch episodes for a series (supports specific season or all seasons via AJAX/page parsing)
 async function getEpisodesData(seriesSlug: string, requestedSeason?: number | "all") {
-  const data = await fetchPage(`/series/${seriesSlug}/`);
+  let data: string;
+  try {
+    data = await fetchPage(`/tv/${seriesSlug}/`);
+  } catch {
+    try {
+      data = await fetchPage(`/series/${seriesSlug}/`);
+    } catch {
+      data = await fetchPage(`/movies/${seriesSlug}/`);
+    }
+  }
+
   const $ = cheerio.load(data);
 
   // Extract post ID for AJAX requests
@@ -376,45 +449,13 @@ async function getEpisodesData(seriesSlug: string, requestedSeason?: number | "a
     }
   });
 
-  // Function to parse episodes from HTML snippet
-  const parseEpisodesFromHtml = (htmlContent: string, seasonNum: number) => {
-    const $c = cheerio.load(htmlContent);
-    const eps: any[] = [];
-    $c("a[href*='/episode/']").each((_, a) => {
-      const href = $c(a).attr("href") || "";
-      const m = href.match(/\/episode\/([^/]+)\/?$/);
-      const epSlug = m ? m[1] : "";
-      if (!epSlug) return;
-
-      const sxe = epSlug.match(/(\d+)x(\d+)$/);
-      const sNum = sxe ? parseInt(sxe[1], 10) : seasonNum;
-      const epNum = sxe ? parseInt(sxe[2], 10) : 0;
-      if (epNum === 0) return;
-
-      const title = $c(a).closest("li, article, .item, div").find(".entry-title, .title").text().trim() ||
-                    $c(a).text().trim().replace(/^\d+\s*/, "").replace(/\s*View\s*$/i, "").trim() ||
-                    `Episode ${epNum}`;
-
-      if (!eps.find(e => e.slug === epSlug)) {
-        eps.push({
-          num: epNum,
-          season: sNum,
-          title,
-          slug: epSlug,
-          url: href,
-        });
-      }
-    });
-    return eps;
-  };
-
   let episodes: any[] = [];
 
   // If specific season requested and postId available
   if (typeof requestedSeason === "number" && requestedSeason > 0 && postId) {
     try {
       const respHtml = await fetchPage(`/wp-admin/admin-ajax.php?action=action_select_season&season=${requestedSeason}&post=${postId}`, { isAjax: true });
-      episodes = parseEpisodesFromHtml(respHtml, requestedSeason);
+      episodes = parseEpisodesFromPage(respHtml, requestedSeason);
     } catch (err: any) {
       console.warn(`AJAX fetch failed for season ${requestedSeason}:`, err.message);
     }
@@ -423,7 +464,7 @@ async function getEpisodesData(seriesSlug: string, requestedSeason?: number | "a
     const seasonRequests = seasons.map(async (s) => {
       try {
         const respHtml = await fetchPage(`/wp-admin/admin-ajax.php?action=action_select_season&season=${s.num}&post=${postId}`, { isAjax: true });
-        return parseEpisodesFromHtml(respHtml, s.num);
+        return parseEpisodesFromPage(respHtml, s.num);
       } catch (err: any) {
         console.warn(`AJAX fetch failed for season ${s.num}:`, err.message);
         return [];
@@ -434,7 +475,7 @@ async function getEpisodesData(seriesSlug: string, requestedSeason?: number | "a
     episodes = allSeasonEpisodes.flat();
   } else {
     // Fallback: Parse episodes already in the page DOM
-    episodes = parseEpisodesFromHtml(data, 1);
+    episodes = parseEpisodesFromPage(data, 1);
   }
 
   // Deduplicate and sort episodes by season then episode number
@@ -447,7 +488,7 @@ async function getEpisodesData(seriesSlug: string, requestedSeason?: number | "a
   episodes = Array.from(uniqueMap.values());
   episodes.sort((a, b) => a.season - b.season || a.num - b.num);
 
-  return { postId, seasons, episodes };
+  return { postId, seasons, episodes, rawHtml: data };
 }
 
 // ==========================================
@@ -484,15 +525,14 @@ router.get("/health", async (_req, res) => {
 
 // Diagnostic / Debug endpoint for inspecting upstream connectivity & Cloudflare status
 router.get("/debug", async (_req, res) => {
-  const DEFAULT_PROXY_URL = "https://animesalt-proxy.v1nx.workers.dev";
-  const proxyGateway = process.env.PROXY_URL || process.env.SCRAPER_PROXY || DEFAULT_PROXY_URL;
+  const proxyGateway = process.env.PROXY_URL || process.env.SCRAPER_PROXY || "";
   const flareSolverrUrl = process.env.FLARESOLVERR_URL;
   const result: any = {
     timestamp: new Date().toISOString(),
     vercelRegion: process.env.VERCEL_REGION || "local",
     nodeVersion: process.version,
     target: BASE_URL,
-    configuredProxyUrl: proxyGateway,
+    configuredProxyUrl: proxyGateway || null,
     configuredFlareSolverrUrl: flareSolverrUrl || null,
   };
 
@@ -588,30 +628,34 @@ router.get("/latest-episodes", async (_req, res) => {
   try {
     const data = await fetchPage("/");
     const $ = cheerio.load(data);
-    const results: any[] = [];
+    let results = extractAnimeList(data);
 
-    $("section.widget_list_episodes article.post, .widget_list_episodes article, article.post").each((_, el) => {
-      const linkEl = $(el).find("a.lnk-blk").first();
-      let url = linkEl.attr("href") || $(el).find("a[href*='/series/'], a[href*='/movies/'], a[href*='/episode/']").first().attr("href") || "";
-      const slugMatch = url.match(/\/(series|movies|episode)\/([^/]+)\/?$/);
-      const id = slugMatch ? slugMatch[2] : "";
-      if (!id) return;
+    if (results.length === 0) {
+      $("section.widget_list_episodes article.post, .widget_list_episodes article, article.post").each((_, el) => {
+        const linkEl = $(el).find("a.lnk-blk").first();
+        let url = linkEl.attr("href") || $(el).find("a[href*='/tv/'], a[href*='/series/'], a[href*='/movies/'], a[href*='/episode/']").first().attr("href") || "";
+        const slugMatch = url.match(/\/(tv|series|movies|episode)\/([^/]+)\/?$/);
+        const id = slugMatch ? slugMatch[2] : "";
+        if (!id) return;
 
-      const title = $(el).find("h2.entry-title, h3, .entry-title").text().trim() ||
-                    $(el).find("img").attr("alt")?.replace(/^Image\s+/i, "").trim() || "";
-      let image = $(el).find("img").attr("data-src") || $(el).find("img").attr("src") || "";
-      if (image && image.startsWith("//")) image = "https:" + image;
+        const title = $(el).find("h2.entry-title, h3, .entry-title").text().trim() ||
+                      $(el).find("img").attr("alt")?.replace(/^Image\s+/i, "").trim() || "";
+        let image = $(el).find("img").attr("data-src") || $(el).find("img").attr("src") || "";
+        if (image && image.startsWith("//")) image = "https:" + image;
 
-      if (!results.find(r => r.id === id)) {
-        results.push({
-          id,
-          title,
-          image,
-          type: slugMatch?.[1] || null,
-          url: url || null,
-        });
-      }
-    });
+        if (!results.find(r => r.id === id)) {
+          const rawType = slugMatch?.[1] || null;
+          const type = rawType === "tv" ? "series" : rawType;
+          results.push({
+            id,
+            title,
+            image,
+            type,
+            url: url || null,
+          });
+        }
+      });
+    }
 
     res.json({ success: true, data: results });
   } catch (e: any) {
@@ -624,35 +668,16 @@ router.get("/latest-episodes", async (_req, res) => {
 router.get("/popular", async (req, res) => {
   const type = req.query.type as string; // 'series' | 'movies' | undefined
   try {
-    const data = await fetchPage("/");
+    let data: string;
+    try {
+      data = await fetchPage("/type/popular/");
+    } catch {
+      data = await fetchPage("/");
+    }
     let results = extractPopularItems(data, type);
 
-    // Fallback if chart-items not present: use On-Air / New Arrivals
     if (results.length === 0) {
-      const $ = cheerio.load(data);
-      $("section[id*='widget_list_movies_series'] article.post").each((i, el) => {
-        const linkEl = $(el).find("a.lnk-blk").first();
-        const url = linkEl.attr("href") || "";
-        const slugMatch = url.match(/\/(series|movies)\/([^/]+)\/?$/);
-        const id = slugMatch ? slugMatch[2] : "";
-        if (!id) return;
-
-        const title = $(el).find("h2.entry-title, .entry-title").text().trim();
-        let image = $(el).find("img").attr("data-src") || $(el).find("img").attr("src") || "";
-        if (image && image.startsWith("//")) image = "https:" + image;
-
-        if (!results.find(r => r.id === id)) {
-          results.push({
-            rank: i + 1,
-            id,
-            title,
-            image,
-            type: slugMatch?.[1] || null,
-            genre: null,
-            url,
-          });
-        }
-      });
+      results = extractAnimeList(data);
     }
 
     res.json({ success: true, data: results });
@@ -665,9 +690,15 @@ router.get("/popular", async (req, res) => {
 // 4. Completed Anime with pagination
 router.get("/completed", async (req, res) => {
   const page = parseInt(req.query.page as string || "1", 10);
-  const path = page > 1 ? `/category/status/completed/page/${page}/` : "/category/status/completed/";
   try {
-    const data = await fetchPage(path);
+    let data: string;
+    try {
+      const path = page > 1 ? `/type/completed/page/${page}/` : "/type/completed/";
+      data = await fetchPage(path);
+    } catch {
+      const fallbackPath = page > 1 ? `/category/status/completed/page/${page}/` : "/category/status/completed/";
+      data = await fetchPage(fallbackPath);
+    }
     const results = extractAnimeList(data);
     res.json({ success: true, page, data: results });
   } catch (e: any) {
@@ -682,9 +713,15 @@ router.get("/completed", async (req, res) => {
 // 5. Ongoing Anime with pagination
 router.get("/ongoing", async (req, res) => {
   const page = parseInt(req.query.page as string || "1", 10);
-  const path = page > 1 ? `/category/status/ongoing/page/${page}/` : "/category/status/ongoing/";
   try {
-    const data = await fetchPage(path);
+    let data: string;
+    try {
+      const path = page > 1 ? `/type/ongoing/page/${page}/` : "/type/ongoing/";
+      data = await fetchPage(path);
+    } catch {
+      const fallbackPath = page > 1 ? `/category/status/ongoing/page/${page}/` : "/category/status/ongoing/";
+      data = await fetchPage(fallbackPath);
+    }
     const results = extractAnimeList(data);
     res.json({ success: true, page, data: results });
   } catch (e: any) {
@@ -701,10 +738,16 @@ router.get("/type/:type", async (req, res) => {
   const { type } = req.params;
   const subtype = (req.query.subtype as string) || "series";
   const page = parseInt(req.query.page as string || "1", 10);
-  const path = page > 1 ? `/category/type/${type}/page/${page}/` : `/category/type/${type}/`;
 
   try {
-    const data = await fetchPage(path, { params: { type: subtype } });
+    let data: string;
+    try {
+      const path = page > 1 ? `/type/${type}/page/${page}/` : `/type/${type}/`;
+      data = await fetchPage(path, { params: { type: subtype } });
+    } catch {
+      const fallbackPath = page > 1 ? `/category/type/${type}/page/${page}/` : `/category/type/${type}/`;
+      data = await fetchPage(fallbackPath, { params: { type: subtype } });
+    }
     const results = extractAnimeList(data);
     res.json({ success: true, page, type, subtype, data: results });
   } catch (e: any) {
@@ -720,10 +763,16 @@ router.get("/type/:type", async (req, res) => {
 router.get("/genre/:category", async (req, res) => {
   const { category } = req.params;
   const page = parseInt(req.query.page as string || "1", 10);
-  const path = page > 1 ? `/category/genre/${category}/page/${page}/` : `/category/genre/${category}/`;
 
   try {
-    const data = await fetchPage(path);
+    let data: string;
+    try {
+      const path = page > 1 ? `/genre/${category}/page/${page}/` : `/genre/${category}/`;
+      data = await fetchPage(path);
+    } catch {
+      const fallbackPath = page > 1 ? `/category/genre/${category}/page/${page}/` : `/category/genre/${category}/`;
+      data = await fetchPage(fallbackPath);
+    }
     const results = extractAnimeList(data);
     res.json({ success: true, page, genre: category, data: results });
   } catch (e: any) {
@@ -745,18 +794,21 @@ router.get("/info", async (req, res) => {
     let type = "series";
 
     try {
-      data = await fetchPage(`/series/${animeId}/`);
-    } catch (seriesErr: any) {
-      // If series fails, try /movies/
-      data = await fetchPage(`/movies/${animeId}/`);
-      type = "movies";
+      data = await fetchPage(`/tv/${animeId}/`);
+    } catch (tvErr: any) {
+      try {
+        data = await fetchPage(`/series/${animeId}/`);
+      } catch (seriesErr: any) {
+        data = await fetchPage(`/movies/${animeId}/`);
+        type = "movies";
+      }
     }
 
     const $ = cheerio.load(data);
 
-    const title = $("h1.entry-title, .sheader .data h1, h1").first().text().trim();
-    let poster = $(".sheader .poster img, .post-thumbnail img, img.wp-post-image, .poster img").first().attr("data-src") ||
-                 $(".sheader .poster img, .post-thumbnail img, img.wp-post-image, .poster img").first().attr("src") || "";
+    const title = $("h1.entry-title, .hero-title, .sheader .data h1, h1").first().text().trim();
+    let poster = $(".hero-poster-mini, .sheader .poster img, .post-thumbnail img, img.wp-post-image, .poster img, img")
+                 .first().attr("src") || $(".hero-poster-mini, img").first().attr("data-src") || "";
     if (poster && poster.startsWith("//")) poster = "https:" + poster;
 
     const description = $("#overview-text p, #overview-text, .overview, .synopsis, .sinopsis, .entry-content p, .wp-content p")
@@ -764,21 +816,21 @@ router.get("/info", async (req, res) => {
 
     // Extract genres
     const genres: string[] = [];
-    $('a[href*="/category/genre/"]').each((_, el) => {
+    $('a[href*="/genre/"], a[href*="/category/genre/"]').each((_, el) => {
       const g = $(el).text().trim();
       if (g && !genres.includes(g)) genres.push(g);
     });
 
     // Extract languages
     const languages: string[] = [];
-    $('a[href*="/category/language/"]').each((_, el) => {
+    $('a[href*="/audio/"], a[href*="/category/language/"]').each((_, el) => {
       const l = $(el).text().trim();
       if (l && !languages.includes(l)) languages.push(l);
     });
 
     // Extract additional metadata
     const info: Record<string, string> = {};
-    $(".custom_fields, .spe, .extra, .metainfo, .info-content").find("span, li, p").each((_, el) => {
+    $(".custom_fields, .spe, .extra, .metainfo, .info-content, .anime-meta-item").find("span, li, p, div").each((_, el) => {
       const text = $(el).text();
       const parts = text.split(":");
       if (parts.length >= 2) {
@@ -807,15 +859,15 @@ router.get("/info", async (req, res) => {
 
     // Related / Recommendations
     const related: any[] = [];
-    $(".srelacionados article.post, .releated article.post, .related article").each((_, el) => {
+    $(".srelacionados article, .releated article, .related article, article").each((_, el) => {
       const url = $(el).find("a.lnk-blk").attr("href") || $(el).find("a").first().attr("href") || "";
-      const slugMatch = url.match(/\/(series|movies)\/([^/]+)\/?$/);
+      const slugMatch = url.match(/\/(tv|series|movies)\/([^/]+)\/?$/);
       const relId = slugMatch ? slugMatch[2] : "";
-      if (!relId) return;
+      if (!relId || relId === animeId) return;
 
       const relTitle = $(el).find("h2.entry-title, .entry-title").text().trim() ||
                        $(el).find("img").attr("alt")?.replace(/^Image\s+/i, "").trim() || "";
-      let relImage = $(el).find("img").attr("data-src") || $(el).find("img").attr("src") || "";
+      let relImage = $(el).find("img").attr("src") || $(el).find("img").attr("data-src") || "";
       if (relImage && relImage.startsWith("//")) relImage = "https:" + relImage;
 
       if (!related.find(r => r.id === relId)) {
@@ -857,6 +909,7 @@ router.get("/episodes/:animeId", async (req, res) => {
       title: e.title,
       slug: e.slug,
       url: e.url,
+      servers: e.servers || [],
     }));
 
     res.json({
@@ -877,63 +930,67 @@ router.get("/episodes/:animeId", async (req, res) => {
 
 // 10. Video Servers for an episode
 router.get("/servers", async (req, res) => {
-  const { ep: epSlug } = req.query as { id?: string; ep: string };
+  const { ep: epSlug, id: animeId } = req.query as { id?: string; ep: string };
   if (!epSlug) return res.status(400).json({ success: false, error: "Episode slug (ep) is required" });
 
   try {
-    const epUrl = `/episode/${epSlug}/`;
-    const data = await fetchPage(epUrl);
-    const $ = cheerio.load(data);
+    let servers: any[] = [];
 
-    const servers: any[] = [];
-
-    // Map each .server-btn to its corresponding .video.aa-tb player container
-    $(".server-btn").each((index, el) => {
-      const serverNameHeader = $(el).find(".server-name").text().trim() || `SERVER ${index + 1}`;
-      const serverInfo = $(el).find(".server-info").text().trim();
-      const fullName = serverInfo ? `${serverNameHeader} - ${serverInfo}` : serverNameHeader;
-
-      const videoContainer = $(`#options-${index}`).length ? $(`#options-${index}`) : $(".video.aa-tb").eq(index);
-      const iframe = videoContainer.find("iframe");
-      const embedUrl = iframe.attr("src") || iframe.attr("data-src") || "";
-
-      // Check for multi-language player links
-      let languages: any[] = [];
-      if (embedUrl.includes("multi-lang-plyr/player.php?data=")) {
-        try {
-          const match = embedUrl.match(/data=([A-Za-z0-9+/=]+)/);
-          if (match && match[1]) {
-            const decoded = Buffer.from(match[1], "base64").toString("utf-8");
-            languages = JSON.parse(decoded);
-          }
-        } catch (decErr) {
-          console.warn("Base64 decode failed for multi-lang:", decErr);
-        }
-      }
-
-      servers.push({
-        index,
-        serverName: fullName,
-        embedUrl: embedUrl || null,
-        isMultiLang: languages.length > 0,
-        languages,
-      });
-    });
-
-    // Fallback: If no .server-btn was found, search direct iframes
-    if (servers.length === 0) {
-      $("iframe").each((i, el) => {
-        const src = $(el).attr("src") || $(el).attr("data-src") || "";
-        if (src && !src.includes("google") && !src.includes("facebook") && !src.includes("ad")) {
-          servers.push({
-            index: i,
-            serverName: `Server ${i + 1}`,
-            embedUrl: src,
+    // If animeId slug provided or can be inferred, check page for .ep-tile
+    if (animeId) {
+      try {
+        const { episodes } = await getEpisodesData(animeId);
+        const matchedEp = episodes.find(e => e.slug === epSlug || e.slug === `ep-${epSlug}` || String(e.num) === epSlug);
+        if (matchedEp && matchedEp.servers && matchedEp.servers.length > 0) {
+          servers = matchedEp.servers.map((s: any, idx: number) => ({
+            index: idx,
+            serverName: s.name ? `${s.name} - ${s.lang || 'Default'}` : `Server ${idx + 1}`,
+            embedUrl: s.url || null,
+            language: s.lang || "Default",
             isMultiLang: false,
-            languages: [],
-          });
+          }));
         }
+      } catch (err) {
+        console.warn("Could not get servers from anime page:", err);
+      }
+    }
+
+    // Fallback: fetch episode page directly
+    if (servers.length === 0) {
+      const epUrl = `/episode/${epSlug}/`;
+      const data = await fetchPage(epUrl);
+      const $ = cheerio.load(data);
+
+      $(".server-btn").each((index, el) => {
+        const serverNameHeader = $(el).find(".server-name").text().trim() || `SERVER ${index + 1}`;
+        const serverInfo = $(el).find(".server-info").text().trim();
+        const fullName = serverInfo ? `${serverNameHeader} - ${serverInfo}` : serverNameHeader;
+
+        const videoContainer = $(`#options-${index}`).length ? $(`#options-${index}`) : $(".video.aa-tb").eq(index);
+        const iframe = videoContainer.find("iframe");
+        const embedUrl = iframe.attr("src") || iframe.attr("data-src") || "";
+
+        servers.push({
+          index,
+          serverName: fullName,
+          embedUrl: embedUrl || null,
+          isMultiLang: false,
+        });
       });
+
+      if (servers.length === 0) {
+        $("iframe").each((i, el) => {
+          const src = $(el).attr("src") || $(el).attr("data-src") || "";
+          if (src && !src.includes("google") && !src.includes("facebook") && !src.includes("ad")) {
+            servers.push({
+              index: i,
+              serverName: `Server ${i + 1}`,
+              embedUrl: src,
+              isMultiLang: false,
+            });
+          }
+        });
+      }
     }
 
     res.json({ success: true, data: servers });
@@ -945,7 +1002,7 @@ router.get("/servers", async (req, res) => {
 
 // 11. Stream / Embed URL extractor
 router.get("/stream", async (req, res) => {
-  const { ep: epSlug, server: serverParam, lang } = req.query as {
+  const { ep: epSlug, id: animeId, server: serverParam, lang } = req.query as {
     id?: string;
     ep: string;
     server?: string;
@@ -955,42 +1012,33 @@ router.get("/stream", async (req, res) => {
   if (!epSlug) return res.status(400).json({ success: false, error: "Episode slug (ep) is required" });
 
   try {
-    const epUrl = `/episode/${epSlug}/`;
-    const data = await fetchPage(epUrl);
-    const $ = cheerio.load(data);
-
+    let embedUrl: string | null = null;
+    let selectedLanguage: string | null = lang || null;
     const serverIndex = parseInt(serverParam || "0", 10);
-    const videoContainer = $(`#options-${serverIndex}`).length ? $(`#options-${serverIndex}`) : $(".video.aa-tb").eq(serverIndex);
-    const iframe = videoContainer.find("iframe").length ? videoContainer.find("iframe") : $("iframe").eq(serverIndex);
 
-    let embedUrl = iframe.attr("src") || iframe.attr("data-src") || null;
-    let selectedLanguage: string | null = null;
-
-    // If multi-language player is selected and a specific language is requested
-    if (embedUrl && embedUrl.includes("multi-lang-plyr/player.php?data=")) {
+    if (animeId) {
       try {
-        const match = embedUrl.match(/data=([A-Za-z0-9+/=]+)/);
-        if (match && match[1]) {
-          const decoded = Buffer.from(match[1], "base64").toString("utf-8");
-          const languages = JSON.parse(decoded);
-          if (Array.isArray(languages)) {
-            if (lang) {
-              const matchedLang = languages.find((l: any) => l.language?.toLowerCase() === lang.toLowerCase());
-              if (matchedLang) {
-                embedUrl = matchedLang.link;
-                selectedLanguage = matchedLang.language;
-              }
-            } else if (languages.length > 0) {
-              const english = languages.find((l: any) => l.language?.toLowerCase().includes("eng"));
-              if (english) {
-                selectedLanguage = english.language;
-              }
-            }
-          }
+        const { episodes } = await getEpisodesData(animeId);
+        const matchedEp = episodes.find(e => e.slug === epSlug || e.slug === `ep-${epSlug}` || String(e.num) === epSlug);
+        if (matchedEp && matchedEp.servers && matchedEp.servers.length > 0) {
+          const s = matchedEp.servers[serverIndex] || matchedEp.servers[0];
+          embedUrl = s.url || null;
+          selectedLanguage = s.lang || null;
         }
       } catch (err) {
-        console.warn("Could not parse multi-lang stream data:", err);
+        console.warn("Could not parse stream from anime page:", err);
       }
+    }
+
+    if (!embedUrl) {
+      const epUrl = `/episode/${epSlug}/`;
+      const data = await fetchPage(epUrl);
+      const $ = cheerio.load(data);
+
+      const videoContainer = $(`#options-${serverIndex}`).length ? $(`#options-${serverIndex}`) : $(".video.aa-tb").eq(serverIndex);
+      const iframe = videoContainer.find("iframe").length ? videoContainer.find("iframe") : $("iframe").eq(serverIndex);
+
+      embedUrl = iframe.attr("src") || iframe.attr("data-src") || null;
     }
 
     if (embedUrl && embedUrl.startsWith("//")) {
@@ -1004,7 +1052,7 @@ router.get("/stream", async (req, res) => {
         serverIndex,
         selectedLanguage,
         isIframe: true,
-        referer: `${BASE_URL}${epUrl}`,
+        referer: `${BASE_URL}/`,
       },
     });
   } catch (e: any) {

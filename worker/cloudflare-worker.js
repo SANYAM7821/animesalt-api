@@ -1,17 +1,10 @@
 /**
- * AnimeSalt Edge Reverse Proxy — v2 (Upgraded)
+ * AnimeSalt Edge Reverse Proxy — v2.1
  *
  * Deploy this script to a Cloudflare Worker (Workers & Pages → Create Worker).
  * This Worker runs inside Cloudflare's own edge network, so outbound subrequests
- * to animesalt.cx (also behind Cloudflare) are treated as trusted internal traffic
+ * to animesalt.me (also behind Cloudflare) are treated as trusted internal traffic
  * and bypass Super Bot Fight Mode.
- *
- * KEY CHANGES vs v1:
- * 1. Added `cf` options object on the subrequest fetch() to control Cloudflare's
- *    own CDN behavior for the outbound call.
- * 2. Referer is set to "https://www.google.com/" to simulate organic search traffic.
- * 3. Removed unnecessary response headers that can cause browser/client issues.
- * 4. Added CORS preflight (OPTIONS) handling.
  */
 export default {
   async fetch(request, env, ctx) {
@@ -32,24 +25,24 @@ export default {
 
     // --- Target URL Resolution (3 modes) ---
 
-    // Mode 1: Query parameter — ?url=https://animesalt.cx/series/naruto/
+    // Mode 1: Query parameter — ?url=https://animesalt.me/tv/jojos-bizarre-adventure-season-3/
     let target = url.searchParams.get("url");
 
-    // Mode 2: Path-encoded URL — /https://animesalt.cx/series/naruto/
+    // Mode 2: Path-encoded URL — /https://animesalt.me/tv/jojos-bizarre-adventure-season-3/
     if (!target && url.pathname.startsWith("/http")) {
       target = decodeURIComponent(url.pathname.slice(1)) + url.search;
     }
 
-    // Mode 3: Reverse proxy — /series/naruto/ (default, appended to BASE)
+    // Mode 3: Reverse proxy — /tv/jojos-bizarre-adventure-season-3/ (default, appended to BASE)
     if (!target) {
-      target = "https://animesalt.cx" + url.pathname + url.search;
+      target = "https://animesalt.me" + url.pathname + url.search;
     }
 
-    // Validate target is animesalt.cx to prevent open-proxy abuse
+    // Validate target is animesalt (animesalt.me or animesalt.cx) to prevent open-proxy abuse
     try {
       const targetUrl = new URL(target);
-      if (!targetUrl.hostname.endsWith("animesalt.cx")) {
-        return new Response("Forbidden: only animesalt.cx targets are allowed", { status: 403 });
+      if (!targetUrl.hostname.includes("animesalt.")) {
+        return new Response("Forbidden: only animesalt targets are allowed", { status: 403 });
       }
     } catch {
       return new Response("Bad Request: invalid target URL", { status: 400 });
@@ -69,8 +62,8 @@ export default {
               "Accept": "*/*",
               "Accept-Language": "en-US,en;q=0.9",
               "X-Requested-With": "XMLHttpRequest",
-              "Referer": "https://animesalt.cx/",
-              "Origin": "https://animesalt.cx",
+              "Referer": "https://animesalt.me/",
+              "Origin": "https://animesalt.me",
               "sec-fetch-dest": "empty",
               "sec-fetch-mode": "cors",
               "sec-fetch-site": "same-origin",
@@ -81,7 +74,6 @@ export default {
               "Accept-Language": "en-US,en;q=0.9",
               "Cache-Control": "no-cache",
               "Pragma": "no-cache",
-              // Simulate arriving from a Google search — looks like organic traffic
               "Referer": "https://www.google.com/search?q=animesalt",
               "sec-fetch-dest": "document",
               "sec-fetch-mode": "navigate",
@@ -90,9 +82,6 @@ export default {
               "Upgrade-Insecure-Requests": "1",
             },
 
-        // cf options: control how Cloudflare's CDN handles this subrequest.
-        // scrapeShield: false — disables email obfuscation on response content.
-        // cacheTtl: 0 — always fetch fresh content, never serve stale.
         cf: {
           scrapeShield: false,
           cacheTtl: 0,
