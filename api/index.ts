@@ -486,20 +486,49 @@ router.get("/health", async (_req, res) => {
 router.get("/debug", async (_req, res) => {
   const DEFAULT_PROXY_URL = "https://animesalt-proxy.v1nx.workers.dev";
   const proxyGateway = process.env.PROXY_URL || process.env.SCRAPER_PROXY || DEFAULT_PROXY_URL;
+  const flareSolverrUrl = process.env.FLARESOLVERR_URL;
   const result: any = {
     timestamp: new Date().toISOString(),
     vercelRegion: process.env.VERCEL_REGION || "local",
     nodeVersion: process.version,
     target: BASE_URL,
     configuredProxyUrl: proxyGateway,
+    configuredFlareSolverrUrl: flareSolverrUrl || null,
   };
+
+  // 0. Diagnostic test on FlareSolverr if configured
+  if (flareSolverrUrl) {
+    try {
+      const ft0 = performance.now();
+      const solverResp = await fetch(`${flareSolverrUrl.replace(/\/+$/, "")}/v1`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cmd: "request.get",
+          url: `${BASE_URL}/`,
+          maxTimeout: 30000,
+        }),
+      });
+      const fDuration = Math.round(performance.now() - ft0);
+      const solverJson = await solverResp.json() as any;
+      result.flareSolverrDiagnostic = {
+        status: solverResp.status,
+        durationMs: fDuration,
+        solutionStatus: solverJson.status,
+        isChallenge: solverJson.solution?.response ? solverJson.solution.response.includes("Just a moment...") : true,
+        preview: solverJson.solution?.response ? solverJson.solution.response.slice(0, 150).replace(/\s+/g, " ").trim() : solverJson.message,
+      };
+    } catch (fErr: any) {
+      result.flareSolverrDiagnostic = { error: fErr.message };
+    }
+  }
 
   // 1. Diagnostic test on configured proxy
   if (proxyGateway) {
     try {
       const testUrl = buildProxyUrl(proxyGateway, `${BASE_URL}/`);
       const pt0 = performance.now();
-      const pResp = await fetch(testUrl, { headers: CHROME_HEADERS });
+      const pResp = await fetch(testUrl);
       const pText = await pResp.text();
       result.proxyDiagnostic = {
         requestedUrl: testUrl,
