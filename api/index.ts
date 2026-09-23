@@ -12,8 +12,8 @@ app.use(express.json());
 const BASE_URL = "https://animesalt.me";
 
 // ==========================================
-// In-Memory & Edge TTL Caching Engine
-// Saves 95%+ of outbound requests to proxies/upstream
+// Multi-Tier In-Memory & Upstash Redis Cache
+// Saves 99%+ of outbound requests to proxies/upstream
 // ==========================================
 interface CacheEntry {
   data: any;
@@ -22,17 +22,43 @@ interface CacheEntry {
 
 const memoryCache = new Map<string, CacheEntry>();
 
-function getCached<T>(key: string): T | null {
+async function getCachedAsync<T>(key: string): Promise<T | null> {
+  // 1. Check local in-memory cache (0ms)
   const entry = memoryCache.get(key);
-  if (!entry) return null;
-  if (Date.now() > entry.expiry) {
+  if (entry) {
+    if (Date.now() <= entry.expiry) {
+      return entry.data as T;
+    }
     memoryCache.delete(key);
-    return null;
   }
-  return entry.data as T;
+
+  // 2. Check Upstash Redis Serverless REST API (<15ms)
+  const redisUrl = process.env.UPSTASH_REDIS_REST_URL;
+  const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN;
+
+  if (redisUrl && redisToken) {
+    try {
+      const res = await fetch(`${redisUrl.replace(/\/+$/, "")}/get/${encodeURIComponent(key)}`, {
+        headers: { Authorization: `Bearer ${redisToken}` },
+      });
+      if (res.ok) {
+        const json = await res.json() as any;
+        if (json.result) {
+          const parsed = typeof json.result === "string" ? JSON.parse(json.result) : json.result;
+          memoryCache.set(key, { data: parsed, expiry: Date.now() + 300000 });
+          return parsed as T;
+        }
+      }
+    } catch (err) {
+      console.warn("Upstash Redis get error:", err);
+    }
+  }
+
+  return null;
 }
 
-function setCache(key: string, data: any, ttlSeconds: number = 900) {
+async function setCacheAsync(key: string, data: any, ttlSeconds: number = 86400) {
+  // 1. Store in local in-memory cache
   if (memoryCache.size > 1000) {
     const oldestKey = memoryCache.keys().next().value;
     if (oldestKey) memoryCache.delete(oldestKey);
@@ -41,9 +67,29 @@ function setCache(key: string, data: any, ttlSeconds: number = 900) {
     data,
     expiry: Date.now() + ttlSeconds * 1000,
   });
+
+  // 2. Persist to Upstash Redis (if configured)
+  const redisUrl = process.env.UPSTASH_REDIS_REST_URL;
+  const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN;
+
+  if (redisUrl && redisToken) {
+    try {
+      const serialized = JSON.stringify(data);
+      await fetch(`${redisUrl.replace(/\/+$/, "")}/set/${encodeURIComponent(key)}?EX=${ttlSeconds}`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${redisToken}`,
+          "Content-Type": "application/json",
+        },
+        body: serialized,
+      });
+    } catch (err) {
+      console.warn("Upstash Redis set error:", err);
+    }
+  }
 }
 
-function sendCachedResponse(res: express.Response, data: any, ttlSeconds: number = 900) {
+function sendCachedResponse(res: express.Response, data: any, ttlSeconds: number = 86400) {
   res.setHeader("Cache-Control", `public, max-age=${Math.min(300, ttlSeconds)}, s-maxage=${ttlSeconds}, stale-while-revalidate=600`);
   res.setHeader("X-Cache-Status", "HIT");
   res.json(data);
@@ -155,7 +201,7 @@ async function fetchPage(path: string, options: FetchPageOptions = {}): Promise<
     fullUrl = urlObj.toString();
   }
 
-  // -1. FlareSolverr: Real Chromium browser bypass — defeats JA3 + Turnstile completely.
+  // -1. FlareSolverr: Real Chromium browser bypass
   const FLARESOLVERR_URL = process.env.FLARESOLVERR_URL;
   if (FLARESOLVERR_URL) {
     try {
@@ -226,7 +272,6 @@ async function fetchPage(path: string, options: FetchPageOptions = {}): Promise<
 
   const timeoutMs = options.timeoutMs || 14000;
 
-  // Header strategies to try in order
   const headerProfiles = isAjax
     ? [AJAX_HEADERS]
     : [CHROME_HEADERS, MINIMAL_HEADERS];
@@ -234,7 +279,6 @@ async function fetchPage(path: string, options: FetchPageOptions = {}): Promise<
   let lastStatus = 0;
   let lastBodySnippet = "";
 
-  // 1. Primary: Native fetch attempts across header profiles
   for (const headers of headerProfiles) {
     try {
       const controller = new AbortController();
@@ -271,7 +315,6 @@ async function fetchPage(path: string, options: FetchPageOptions = {}): Promise<
     }
   }
 
-  // 2. Secondary: Axios client with automatic decompression
   try {
     const axiosClient = isAjax ? ajaxClient : client;
     const axiosResp = await axiosClient.get(fullUrl, {
@@ -307,7 +350,6 @@ function extractAnimeList(html: string) {
     const linkEl = $(el).find("a.lnk-blk").first();
     let url = linkEl.attr("href") || $(el).find("a").first().attr("href") || "";
 
-    // Extract slug from URL like /tv/naruto/, /series/naruto/, or /movies/some-movie/
     const slugMatch = url.match(/\/(tv|series|movies)\/([^/]+)\/?$/);
     const id = slugMatch ? slugMatch[2] : url.replace(/.*\//, "").replace(/\/$/, "");
 
@@ -389,7 +431,6 @@ function parseEpisodesFromPage(htmlContent: string, defaultSeasonNum: number = 1
   const $ = cheerio.load(htmlContent);
   const eps: any[] = [];
 
-  // Strategy 1: .ep-tile buttons (AnimeSalt v2 schema with embedded server JSON)
   $(".ep-tile").each((_, el) => {
     const slug = $(el).attr("data-slug") || "";
     const epName = $(el).text().trim() || $(el).attr("data-name") || "";
@@ -421,7 +462,6 @@ function parseEpisodesFromPage(htmlContent: string, defaultSeasonNum: number = 1
     }
   });
 
-  // Strategy 2: Legacy ToroFilm a[href*='/episode/']
   if (eps.length === 0) {
     $("a[href*='/episode/']").each((_, a) => {
       const href = $(a).attr("href") || "";
@@ -453,7 +493,7 @@ function parseEpisodesFromPage(htmlContent: string, defaultSeasonNum: number = 1
   return eps;
 }
 
-// Helper: Fetch episodes for a series (supports specific season or all seasons via AJAX/page parsing)
+// Helper: Fetch episodes for a series
 async function getEpisodesData(seriesSlug: string, requestedSeason?: number | "all") {
   let data: string;
   try {
@@ -468,13 +508,11 @@ async function getEpisodesData(seriesSlug: string, requestedSeason?: number | "a
 
   const $ = cheerio.load(data);
 
-  // Extract post ID for AJAX requests
   const postId = $(".season-btn[data-post]").attr("data-post") ||
                  $("body").attr("class")?.match(/postid-(\d+)/)?.[1] ||
                  $(".bookmark-button, [data-post]").attr("data-post") ||
                  $("[data-id]").attr("data-id") || null;
 
-  // Extract seasons list from buttons
   const seasons: { num: number; title: string; episodeCount?: number }[] = [];
   $(".season-btn, .sel-temp, .aa-stn li").each((_, el) => {
     const sNum = parseInt($(el).attr("data-season") || "0", 10);
@@ -551,7 +589,7 @@ router.get("/health", async (_req, res) => {
       latencyMs: upstreamLatency,
       error: upstreamError,
     },
-    version: "2.1.0",
+    version: "2.2.0",
     endpointsCount: 13,
   });
 });
@@ -560,14 +598,17 @@ router.get("/health", async (_req, res) => {
 router.get("/debug", async (_req, res) => {
   const proxyGateway = process.env.PROXY_URL || process.env.SCRAPER_PROXY || "";
   const flareSolverrUrl = process.env.FLARESOLVERR_URL;
+  const redisConfigured = !!(process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN);
+
   const result: any = {
     timestamp: new Date().toISOString(),
     vercelRegion: process.env.VERCEL_REGION || "local",
     nodeVersion: process.version,
     target: BASE_URL,
+    upstashRedisConfigured: redisConfigured,
     configuredProxyUrl: proxyGateway || null,
     configuredFlareSolverrUrl: flareSolverrUrl || null,
-    cacheEntriesCount: memoryCache.size,
+    inMemoryCacheEntriesCount: memoryCache.size,
   };
 
   if (flareSolverrUrl) {
@@ -641,7 +682,7 @@ router.get("/search", async (req, res) => {
   if (!keyword) return res.status(400).json({ success: false, error: "Keyword required" });
 
   const cacheKey = `search_${keyword.toLowerCase()}_p${page}`;
-  const cached = getCached(cacheKey);
+  const cached = await getCachedAsync(cacheKey);
   if (cached) return sendCachedResponse(res, cached, 600);
 
   try {
@@ -649,7 +690,7 @@ router.get("/search", async (req, res) => {
     const data = await fetchPage(searchUrl, { params: page === 1 ? { s: keyword } : {} });
     const results = extractAnimeList(data);
     const payload = { success: true, page, data: results };
-    setCache(cacheKey, payload, 600);
+    await setCacheAsync(cacheKey, payload, 600);
     sendCachedResponse(res, payload, 600);
   } catch (e: any) {
     if (e.status === 404 || e.response?.status === 404) {
@@ -663,7 +704,7 @@ router.get("/search", async (req, res) => {
 // 2. Latest Episodes
 router.get("/latest-episodes", async (_req, res) => {
   const cacheKey = "latest_episodes";
-  const cached = getCached(cacheKey);
+  const cached = await getCachedAsync(cacheKey);
   if (cached) return sendCachedResponse(res, cached, 300);
 
   try {
@@ -699,7 +740,7 @@ router.get("/latest-episodes", async (_req, res) => {
     }
 
     const payload = { success: true, data: results };
-    setCache(cacheKey, payload, 300);
+    await setCacheAsync(cacheKey, payload, 300);
     sendCachedResponse(res, payload, 300);
   } catch (e: any) {
     console.error("Latest eps error:", e.message);
@@ -709,9 +750,9 @@ router.get("/latest-episodes", async (_req, res) => {
 
 // 3. Popular Anime / Charts (Most-Watched Series & Films)
 router.get("/popular", async (req, res) => {
-  const type = req.query.type as string; // 'series' | 'movies' | undefined
+  const type = req.query.type as string;
   const cacheKey = `popular_${type || "all"}`;
-  const cached = getCached(cacheKey);
+  const cached = await getCachedAsync(cacheKey);
   if (cached) return sendCachedResponse(res, cached, 900);
 
   try {
@@ -728,7 +769,7 @@ router.get("/popular", async (req, res) => {
     }
 
     const payload = { success: true, data: results };
-    setCache(cacheKey, payload, 900);
+    await setCacheAsync(cacheKey, payload, 900);
     sendCachedResponse(res, payload, 900);
   } catch (e: any) {
     console.error("Popular error:", e.message);
@@ -740,7 +781,7 @@ router.get("/popular", async (req, res) => {
 router.get("/completed", async (req, res) => {
   const page = parseInt(req.query.page as string || "1", 10);
   const cacheKey = `completed_p${page}`;
-  const cached = getCached(cacheKey);
+  const cached = await getCachedAsync(cacheKey);
   if (cached) return sendCachedResponse(res, cached, 900);
 
   try {
@@ -754,7 +795,7 @@ router.get("/completed", async (req, res) => {
     }
     const results = extractAnimeList(data);
     const payload = { success: true, page, data: results };
-    setCache(cacheKey, payload, 900);
+    await setCacheAsync(cacheKey, payload, 900);
     sendCachedResponse(res, payload, 900);
   } catch (e: any) {
     if (e.status === 404 || e.response?.status === 404) {
@@ -769,7 +810,7 @@ router.get("/completed", async (req, res) => {
 router.get("/ongoing", async (req, res) => {
   const page = parseInt(req.query.page as string || "1", 10);
   const cacheKey = `ongoing_p${page}`;
-  const cached = getCached(cacheKey);
+  const cached = await getCachedAsync(cacheKey);
   if (cached) return sendCachedResponse(res, cached, 600);
 
   try {
@@ -783,7 +824,7 @@ router.get("/ongoing", async (req, res) => {
     }
     const results = extractAnimeList(data);
     const payload = { success: true, page, data: results };
-    setCache(cacheKey, payload, 600);
+    await setCacheAsync(cacheKey, payload, 600);
     sendCachedResponse(res, payload, 600);
   } catch (e: any) {
     if (e.status === 404 || e.response?.status === 404) {
@@ -801,7 +842,7 @@ router.get("/type/:type", async (req, res) => {
   const page = parseInt(req.query.page as string || "1", 10);
 
   const cacheKey = `type_${type}_${subtype}_p${page}`;
-  const cached = getCached(cacheKey);
+  const cached = await getCachedAsync(cacheKey);
   if (cached) return sendCachedResponse(res, cached, 900);
 
   try {
@@ -815,7 +856,7 @@ router.get("/type/:type", async (req, res) => {
     }
     const results = extractAnimeList(data);
     const payload = { success: true, page, type, subtype, data: results };
-    setCache(cacheKey, payload, 900);
+    await setCacheAsync(cacheKey, payload, 900);
     sendCachedResponse(res, payload, 900);
   } catch (e: any) {
     if (e.status === 404 || e.response?.status === 404) {
@@ -832,7 +873,7 @@ router.get("/genre/:category", async (req, res) => {
   const page = parseInt(req.query.page as string || "1", 10);
 
   const cacheKey = `genre_${category}_p${page}`;
-  const cached = getCached(cacheKey);
+  const cached = await getCachedAsync(cacheKey);
   if (cached) return sendCachedResponse(res, cached, 900);
 
   try {
@@ -846,7 +887,7 @@ router.get("/genre/:category", async (req, res) => {
     }
     const results = extractAnimeList(data);
     const payload = { success: true, page, genre: category, data: results };
-    setCache(cacheKey, payload, 900);
+    await setCacheAsync(cacheKey, payload, 900);
     sendCachedResponse(res, payload, 900);
   } catch (e: any) {
     if (e.status === 404 || e.response?.status === 404) {
@@ -863,8 +904,8 @@ router.get("/info", async (req, res) => {
   if (!animeId) return res.status(400).json({ success: false, error: "Anime ID (slug) is required" });
 
   const cacheKey = `info_${animeId}`;
-  const cached = getCached(cacheKey);
-  if (cached) return sendCachedResponse(res, cached, 1800);
+  const cached = await getCachedAsync(cacheKey);
+  if (cached) return sendCachedResponse(res, cached, 86400);
 
   try {
     let data: string;
@@ -961,8 +1002,8 @@ router.get("/info", async (req, res) => {
         ...info,
       },
     };
-    setCache(cacheKey, payload, 1800);
-    sendCachedResponse(res, payload, 1800);
+    await setCacheAsync(cacheKey, payload, 86400); // 24 hours
+    sendCachedResponse(res, payload, 86400);
   } catch (e: any) {
     console.error("Info error:", e.message);
     res.status(500).json({ success: false, error: "Failed to scrape anime details", details: e.message });
@@ -976,8 +1017,8 @@ router.get("/episodes/:animeId", async (req, res) => {
   const requestedSeason = seasonParam ? parseInt(seasonParam, 10) : undefined;
 
   const cacheKey = `episodes_${animeId}_s${requestedSeason || 'all'}`;
-  const cached = getCached(cacheKey);
-  if (cached) return sendCachedResponse(res, cached, 1800);
+  const cached = await getCachedAsync(cacheKey);
+  if (cached) return sendCachedResponse(res, cached, 86400);
 
   try {
     const { episodes, seasons } = await getEpisodesData(animeId, requestedSeason);
@@ -1000,8 +1041,8 @@ router.get("/episodes/:animeId", async (req, res) => {
         episodes: formattedEpisodes,
       },
     };
-    setCache(cacheKey, payload, 1800);
-    sendCachedResponse(res, payload, 1800);
+    await setCacheAsync(cacheKey, payload, 86400); // 24 hours
+    sendCachedResponse(res, payload, 86400);
   } catch (e: any) {
     console.error("Episodes error:", e.message);
     res.status(500).json({ success: false, error: "Failed to scrape episodes", details: e.message });
@@ -1014,8 +1055,8 @@ router.get("/servers", async (req, res) => {
   if (!epSlug) return res.status(400).json({ success: false, error: "Episode slug (ep) is required" });
 
   const cacheKey = `servers_${animeId || 'none'}_${epSlug}`;
-  const cached = getCached(cacheKey);
-  if (cached) return sendCachedResponse(res, cached, 1800);
+  const cached = await getCachedAsync(cacheKey);
+  if (cached) return sendCachedResponse(res, cached, 86400);
 
   try {
     let servers: any[] = [];
@@ -1094,8 +1135,8 @@ router.get("/servers", async (req, res) => {
     }
 
     const payload = { success: true, data: servers };
-    setCache(cacheKey, payload, 1800);
-    sendCachedResponse(res, payload, 1800);
+    await setCacheAsync(cacheKey, payload, 86400); // 24 hours
+    sendCachedResponse(res, payload, 86400);
   } catch (e: any) {
     console.error("Servers error:", e.message);
     res.status(500).json({ success: false, error: "Failed to scrape servers", details: e.message });
@@ -1114,8 +1155,8 @@ router.get("/stream", async (req, res) => {
   if (!epSlug) return res.status(400).json({ success: false, error: "Episode slug (ep) is required" });
 
   const cacheKey = `stream_${animeId || 'none'}_${epSlug}_s${serverParam || 0}_l${lang || 'default'}`;
-  const cached = getCached(cacheKey);
-  if (cached) return sendCachedResponse(res, cached, 1800);
+  const cached = await getCachedAsync(cacheKey);
+  if (cached) return sendCachedResponse(res, cached, 86400);
 
   try {
     let embedUrl: string | null = null;
@@ -1180,8 +1221,8 @@ router.get("/stream", async (req, res) => {
         referer: `${BASE_URL}/`,
       },
     };
-    setCache(cacheKey, payload, 1800);
-    sendCachedResponse(res, payload, 1800);
+    await setCacheAsync(cacheKey, payload, 86400); // 24 hours
+    sendCachedResponse(res, payload, 86400);
   } catch (e: any) {
     console.error("Stream error:", e.message);
     res.status(500).json({ success: false, error: "Failed to scrape stream", details: e.message });
