@@ -12,17 +12,43 @@ app.use(express.json());
 const BASE_URL = "https://animesalt.me";
 
 // ==========================================
-// Multi-Tier In-Memory & Upstash Redis Cache
-// Saves 99%+ of outbound requests to proxies/upstream
+// Multi-Tier Upstash Redis Replication & Failover Engine
 // ==========================================
 interface CacheEntry {
   data: any;
   expiry: number;
 }
 
+interface RedisAccount {
+  url: string;
+  token: string;
+}
+
 const memoryCache = new Map<string, CacheEntry>();
 
-async function getCachedAsync<T>(key: string): Promise<T | null> {
+function getRedisAccounts(): RedisAccount[] {
+  const accounts: RedisAccount[] = [];
+  const pairs = [
+    [process.env.UPSTASH_REDIS_REST_URL, process.env.UPSTASH_REDIS_REST_TOKEN],
+    [process.env.UPSTASH_REDIS_REST_URL_2, process.env.UPSTASH_REDIS_REST_TOKEN_2],
+    [process.env.UPSTASH_REDIS_REST_URL_3, process.env.UPSTASH_REDIS_REST_TOKEN_3],
+  ];
+
+  for (const [url, token] of pairs) {
+    if (url && token && url.trim() && token.trim()) {
+      accounts.push({
+        url: url.trim().replace(/\/+$/, ""),
+        token: token.trim(),
+      });
+    }
+  }
+
+  return accounts;
+}
+
+async function getCachedAsync<T>(key: string, forceRefresh: boolean = false): Promise<T | null> {
+  if (forceRefresh) return null;
+
   // 1. Check local in-memory cache (0ms)
   const entry = memoryCache.get(key);
   if (entry) {
@@ -32,14 +58,13 @@ async function getCachedAsync<T>(key: string): Promise<T | null> {
     memoryCache.delete(key);
   }
 
-  // 2. Check Upstash Redis Serverless REST API (<15ms)
-  const redisUrl = process.env.UPSTASH_REDIS_REST_URL;
-  const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN;
+  // 2. Check Upstash Redis accounts sequentially (Account 1 -> Account 2 -> Account 3)
+  const redisAccounts = getRedisAccounts();
 
-  if (redisUrl && redisToken) {
+  for (const account of redisAccounts) {
     try {
-      const res = await fetch(`${redisUrl.replace(/\/+$/, "")}/get/${encodeURIComponent(key)}`, {
-        headers: { Authorization: `Bearer ${redisToken}` },
+      const res = await fetch(`${account.url}/get/${encodeURIComponent(key)}`, {
+        headers: { Authorization: `Bearer ${account.token}` },
       });
       if (res.ok) {
         const json = await res.json() as any;
@@ -50,14 +75,14 @@ async function getCachedAsync<T>(key: string): Promise<T | null> {
         }
       }
     } catch (err) {
-      console.warn("Upstash Redis get error:", err);
+      console.warn("Upstash Redis account get error, falling to next account:", err);
     }
   }
 
   return null;
 }
 
-async function setCacheAsync(key: string, data: any, ttlSeconds: number = 86400) {
+async function setCacheAsync(key: string, data: any, ttlSeconds: number = 2592000) {
   // 1. Store in local in-memory cache
   if (memoryCache.size > 1000) {
     const oldestKey = memoryCache.keys().next().value;
@@ -68,29 +93,28 @@ async function setCacheAsync(key: string, data: any, ttlSeconds: number = 86400)
     expiry: Date.now() + ttlSeconds * 1000,
   });
 
-  // 2. Persist to Upstash Redis (if configured)
-  const redisUrl = process.env.UPSTASH_REDIS_REST_URL;
-  const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN;
+  // 2. Replicate in parallel to ALL configured Upstash Redis accounts
+  const redisAccounts = getRedisAccounts();
+  if (redisAccounts.length === 0) return;
 
-  if (redisUrl && redisToken) {
-    try {
-      const serialized = JSON.stringify(data);
-      await fetch(`${redisUrl.replace(/\/+$/, "")}/set/${encodeURIComponent(key)}?EX=${ttlSeconds}`, {
+  const serialized = JSON.stringify(data);
+
+  await Promise.allSettled(
+    redisAccounts.map(account =>
+      fetch(`${account.url}/set/${encodeURIComponent(key)}?EX=${ttlSeconds}`, {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${redisToken}`,
+          Authorization: `Bearer ${account.token}`,
           "Content-Type": "application/json",
         },
         body: serialized,
-      });
-    } catch (err) {
-      console.warn("Upstash Redis set error:", err);
-    }
-  }
+      })
+    )
+  );
 }
 
-function sendCachedResponse(res: express.Response, data: any, ttlSeconds: number = 86400) {
-  res.setHeader("Cache-Control", `public, max-age=${Math.min(300, ttlSeconds)}, s-maxage=${ttlSeconds}, stale-while-revalidate=600`);
+function sendCachedResponse(res: express.Response, data: any, ttlSeconds: number = 2592000) {
+  res.setHeader("Cache-Control", `public, max-age=${Math.min(3600, ttlSeconds)}, s-maxage=${ttlSeconds}, stale-while-revalidate=86400`);
   res.setHeader("X-Cache-Status", "HIT");
   res.json(data);
 }
@@ -586,7 +610,7 @@ router.get("/health", async (_req, res) => {
       latencyMs: upstreamLatency,
       error: upstreamError,
     },
-    version: "2.3.0",
+    version: "2.4.0",
     endpointsCount: 13,
   });
 });
@@ -595,14 +619,15 @@ router.get("/health", async (_req, res) => {
 router.get("/debug", async (_req, res) => {
   const proxyGateway = process.env.PROXY_URL || process.env.SCRAPER_PROXY || "";
   const flareSolverrUrl = getFlareSolverrUrl();
-  const redisConfigured = !!(process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN);
+  const redisAccounts = getRedisAccounts();
 
   const result: any = {
     timestamp: new Date().toISOString(),
     vercelRegion: process.env.VERCEL_REGION || "local",
     nodeVersion: process.version,
     target: BASE_URL,
-    upstashRedisConfigured: redisConfigured,
+    upstashRedisConfigured: redisAccounts.length > 0,
+    configuredRedisAccountsCount: redisAccounts.length,
     configuredProxyUrl: proxyGateway || null,
     configuredFlareSolverrUrl: flareSolverrUrl || null,
     inMemoryCacheEntriesCount: memoryCache.size,
@@ -687,23 +712,17 @@ router.get("/debug", async (_req, res) => {
   res.json(result);
 });
 
-// 1. Search with pagination
+// 1. Search with pagination (Uncached / Direct)
 router.get("/search", async (req, res) => {
   const keyword = req.query.keyword as string;
   const page = parseInt(req.query.page as string || "1", 10);
   if (!keyword) return res.status(400).json({ success: false, error: "Keyword required" });
 
-  const cacheKey = `search_${keyword.toLowerCase()}_p${page}`;
-  const cached = await getCachedAsync(cacheKey);
-  if (cached) return sendCachedResponse(res, cached, 600);
-
   try {
     const searchUrl = page > 1 ? `/?s=${encodeURIComponent(keyword)}&paged=${page}` : "/";
     const data = await fetchPage(searchUrl, { params: page === 1 ? { s: keyword } : {} });
     const results = extractAnimeList(data);
-    const payload = { success: true, page, data: results };
-    await setCacheAsync(cacheKey, payload, 600);
-    sendCachedResponse(res, payload, 600);
+    res.json({ success: true, page, data: results });
   } catch (e: any) {
     if (e.status === 404 || e.response?.status === 404) {
       return res.json({ success: true, page, data: [] });
@@ -713,12 +732,8 @@ router.get("/search", async (req, res) => {
   }
 });
 
-// 2. Latest Episodes
+// 2. Latest Episodes (Uncached / Direct)
 router.get("/latest-episodes", async (_req, res) => {
-  const cacheKey = "latest_episodes";
-  const cached = await getCachedAsync(cacheKey);
-  if (cached) return sendCachedResponse(res, cached, 300);
-
   try {
     const data = await fetchPage("/");
     const $ = cheerio.load(data);
@@ -751,22 +766,16 @@ router.get("/latest-episodes", async (_req, res) => {
       });
     }
 
-    const payload = { success: true, data: results };
-    await setCacheAsync(cacheKey, payload, 300);
-    sendCachedResponse(res, payload, 300);
+    res.json({ success: true, data: results });
   } catch (e: any) {
     console.error("Latest eps error:", e.message);
     res.status(500).json({ success: false, error: "Failed to scrape latest episodes", details: e.message });
   }
 });
 
-// 3. Popular Anime / Charts (Most-Watched Series & Films)
+// 3. Popular Anime / Charts (Uncached / Direct)
 router.get("/popular", async (req, res) => {
   const type = req.query.type as string;
-  const cacheKey = `popular_${type || "all"}`;
-  const cached = await getCachedAsync(cacheKey);
-  if (cached) return sendCachedResponse(res, cached, 900);
-
   try {
     let data: string;
     try {
@@ -780,22 +789,16 @@ router.get("/popular", async (req, res) => {
       results = extractAnimeList(data);
     }
 
-    const payload = { success: true, data: results };
-    await setCacheAsync(cacheKey, payload, 900);
-    sendCachedResponse(res, payload, 900);
+    res.json({ success: true, data: results });
   } catch (e: any) {
     console.error("Popular error:", e.message);
     res.status(500).json({ success: false, error: "Failed to scrape popular anime", details: e.message });
   }
 });
 
-// 4. Completed Anime with pagination
+// 4. Completed Anime (Uncached / Direct)
 router.get("/completed", async (req, res) => {
   const page = parseInt(req.query.page as string || "1", 10);
-  const cacheKey = `completed_p${page}`;
-  const cached = await getCachedAsync(cacheKey);
-  if (cached) return sendCachedResponse(res, cached, 900);
-
   try {
     let data: string;
     try {
@@ -806,9 +809,7 @@ router.get("/completed", async (req, res) => {
       data = await fetchPage(fallbackPath);
     }
     const results = extractAnimeList(data);
-    const payload = { success: true, page, data: results };
-    await setCacheAsync(cacheKey, payload, 900);
-    sendCachedResponse(res, payload, 900);
+    res.json({ success: true, page, data: results });
   } catch (e: any) {
     if (e.status === 404 || e.response?.status === 404) {
       return res.json({ success: true, page, data: [] });
@@ -818,13 +819,9 @@ router.get("/completed", async (req, res) => {
   }
 });
 
-// 5. Ongoing Anime with pagination
+// 5. Ongoing Anime (Uncached / Direct)
 router.get("/ongoing", async (req, res) => {
   const page = parseInt(req.query.page as string || "1", 10);
-  const cacheKey = `ongoing_p${page}`;
-  const cached = await getCachedAsync(cacheKey);
-  if (cached) return sendCachedResponse(res, cached, 600);
-
   try {
     let data: string;
     try {
@@ -835,9 +832,7 @@ router.get("/ongoing", async (req, res) => {
       data = await fetchPage(fallbackPath);
     }
     const results = extractAnimeList(data);
-    const payload = { success: true, page, data: results };
-    await setCacheAsync(cacheKey, payload, 600);
-    sendCachedResponse(res, payload, 600);
+    res.json({ success: true, page, data: results });
   } catch (e: any) {
     if (e.status === 404 || e.response?.status === 404) {
       return res.json({ success: true, page, data: [] });
@@ -847,15 +842,11 @@ router.get("/ongoing", async (req, res) => {
   }
 });
 
-// 6. Type filter (anime / cartoon) with subtype (series / movies) & pagination
+// 6. Type filter (Uncached / Direct)
 router.get("/type/:type", async (req, res) => {
   const { type } = req.params;
   const subtype = (req.query.subtype as string) || "series";
   const page = parseInt(req.query.page as string || "1", 10);
-
-  const cacheKey = `type_${type}_${subtype}_p${page}`;
-  const cached = await getCachedAsync(cacheKey);
-  if (cached) return sendCachedResponse(res, cached, 900);
 
   try {
     let data: string;
@@ -867,9 +858,7 @@ router.get("/type/:type", async (req, res) => {
       data = await fetchPage(fallbackPath, { params: { type: subtype } });
     }
     const results = extractAnimeList(data);
-    const payload = { success: true, page, type, subtype, data: results };
-    await setCacheAsync(cacheKey, payload, 900);
-    sendCachedResponse(res, payload, 900);
+    res.json({ success: true, page, type, subtype, data: results });
   } catch (e: any) {
     if (e.status === 404 || e.response?.status === 404) {
       return res.json({ success: true, page, type, subtype, data: [] });
@@ -879,14 +868,10 @@ router.get("/type/:type", async (req, res) => {
   }
 });
 
-// 7. Genre filter with pagination
+// 7. Genre filter (Uncached / Direct)
 router.get("/genre/:category", async (req, res) => {
   const { category } = req.params;
   const page = parseInt(req.query.page as string || "1", 10);
-
-  const cacheKey = `genre_${category}_p${page}`;
-  const cached = await getCachedAsync(cacheKey);
-  if (cached) return sendCachedResponse(res, cached, 900);
 
   try {
     let data: string;
@@ -898,9 +883,7 @@ router.get("/genre/:category", async (req, res) => {
       data = await fetchPage(fallbackPath);
     }
     const results = extractAnimeList(data);
-    const payload = { success: true, page, genre: category, data: results };
-    await setCacheAsync(cacheKey, payload, 900);
-    sendCachedResponse(res, payload, 900);
+    res.json({ success: true, page, genre: category, data: results });
   } catch (e: any) {
     if (e.status === 404 || e.response?.status === 404) {
       return res.json({ success: true, page, genre: category, data: [] });
@@ -915,9 +898,13 @@ router.get("/info", async (req, res) => {
   const animeId = req.query.id as string;
   if (!animeId) return res.status(400).json({ success: false, error: "Anime ID (slug) is required" });
 
+  const forceRefresh = req.query.refresh === "true" || req.query.force === "true";
+  const isOngoing = req.query.ongoing === "true" || req.query.status === "ongoing";
+  const ttl = isOngoing ? 43200 : 2592000; // 12 Hours for ongoing, 30 Days for completed
+
   const cacheKey = `info_${animeId}`;
-  const cached = await getCachedAsync(cacheKey);
-  if (cached) return sendCachedResponse(res, cached, 86400);
+  const cached = await getCachedAsync(cacheKey, forceRefresh);
+  if (cached) return sendCachedResponse(res, cached, ttl);
 
   try {
     let data: string;
@@ -1014,8 +1001,8 @@ router.get("/info", async (req, res) => {
         ...info,
       },
     };
-    await setCacheAsync(cacheKey, payload, 86400); // 24 hours
-    sendCachedResponse(res, payload, 86400);
+    await setCacheAsync(cacheKey, payload, ttl);
+    sendCachedResponse(res, payload, ttl);
   } catch (e: any) {
     console.error("Info error:", e.message);
     res.status(500).json({ success: false, error: "Failed to scrape anime details", details: e.message });
@@ -1028,9 +1015,13 @@ router.get("/episodes/:animeId", async (req, res) => {
   const seasonParam = req.query.season as string;
   const requestedSeason = seasonParam ? parseInt(seasonParam, 10) : undefined;
 
+  const forceRefresh = req.query.refresh === "true" || req.query.force === "true";
+  const isOngoing = req.query.ongoing === "true" || req.query.status === "ongoing";
+  const ttl = isOngoing ? 43200 : 2592000; // 12 Hours for ongoing, 30 Days for completed
+
   const cacheKey = `episodes_${animeId}_s${requestedSeason || 'all'}`;
-  const cached = await getCachedAsync(cacheKey);
-  if (cached) return sendCachedResponse(res, cached, 86400);
+  const cached = await getCachedAsync(cacheKey, forceRefresh);
+  if (cached) return sendCachedResponse(res, cached, ttl);
 
   try {
     const { episodes, seasons } = await getEpisodesData(animeId, requestedSeason);
@@ -1053,8 +1044,8 @@ router.get("/episodes/:animeId", async (req, res) => {
         episodes: formattedEpisodes,
       },
     };
-    await setCacheAsync(cacheKey, payload, 86400); // 24 hours
-    sendCachedResponse(res, payload, 86400);
+    await setCacheAsync(cacheKey, payload, ttl);
+    sendCachedResponse(res, payload, ttl);
   } catch (e: any) {
     console.error("Episodes error:", e.message);
     res.status(500).json({ success: false, error: "Failed to scrape episodes", details: e.message });
@@ -1066,9 +1057,13 @@ router.get("/servers", async (req, res) => {
   const { ep: epSlug, id: animeId } = req.query as { id?: string; ep: string };
   if (!epSlug) return res.status(400).json({ success: false, error: "Episode slug (ep) is required" });
 
+  const forceRefresh = req.query.refresh === "true" || req.query.force === "true";
+  const isOngoing = req.query.ongoing === "true" || req.query.status === "ongoing";
+  const ttl = isOngoing ? 43200 : 2592000; // 12 Hours for ongoing, 30 Days for completed
+
   const cacheKey = `servers_${animeId || 'none'}_${epSlug}`;
-  const cached = await getCachedAsync(cacheKey);
-  if (cached) return sendCachedResponse(res, cached, 86400);
+  const cached = await getCachedAsync(cacheKey, forceRefresh);
+  if (cached) return sendCachedResponse(res, cached, ttl);
 
   try {
     let servers: any[] = [];
@@ -1147,8 +1142,8 @@ router.get("/servers", async (req, res) => {
     }
 
     const payload = { success: true, data: servers };
-    await setCacheAsync(cacheKey, payload, 86400); // 24 hours
-    sendCachedResponse(res, payload, 86400);
+    await setCacheAsync(cacheKey, payload, ttl);
+    sendCachedResponse(res, payload, ttl);
   } catch (e: any) {
     console.error("Servers error:", e.message);
     res.status(500).json({ success: false, error: "Failed to scrape servers", details: e.message });
@@ -1166,9 +1161,13 @@ router.get("/stream", async (req, res) => {
 
   if (!epSlug) return res.status(400).json({ success: false, error: "Episode slug (ep) is required" });
 
+  const forceRefresh = req.query.refresh === "true" || req.query.force === "true";
+  const isOngoing = req.query.ongoing === "true" || req.query.status === "ongoing";
+  const ttl = isOngoing ? 43200 : 2592000; // 12 Hours for ongoing, 30 Days for completed
+
   const cacheKey = `stream_${animeId || 'none'}_${epSlug}_s${serverParam || 0}_l${lang || 'default'}`;
-  const cached = await getCachedAsync(cacheKey);
-  if (cached) return sendCachedResponse(res, cached, 86400);
+  const cached = await getCachedAsync(cacheKey, forceRefresh);
+  if (cached) return sendCachedResponse(res, cached, ttl);
 
   try {
     let embedUrl: string | null = null;
@@ -1233,8 +1232,8 @@ router.get("/stream", async (req, res) => {
         referer: `${BASE_URL}/`,
       },
     };
-    await setCacheAsync(cacheKey, payload, 86400); // 24 hours
-    sendCachedResponse(res, payload, 86400);
+    await setCacheAsync(cacheKey, payload, ttl);
+    sendCachedResponse(res, payload, ttl);
   } catch (e: any) {
     console.error("Stream error:", e.message);
     res.status(500).json({ success: false, error: "Failed to scrape stream", details: e.message });
