@@ -139,14 +139,14 @@ var AJAX_HEADERS = {
 };
 var client = import_axios.default.create({
   baseURL: BASE_URL,
-  timeout: 15e3,
+  timeout: 1e4,
   headers: CHROME_HEADERS,
   decompress: true,
   maxRedirects: 5
 });
 var ajaxClient = import_axios.default.create({
   baseURL: BASE_URL,
-  timeout: 15e3,
+  timeout: 1e4,
   headers: AJAX_HEADERS,
   decompress: true,
   maxRedirects: 5
@@ -204,42 +204,12 @@ async function fetchPage(path2, options = {}) {
     }
     fullUrl = urlObj.toString();
   }
-  const FLARESOLVERR_URL = getFlareSolverrUrl();
-  if (FLARESOLVERR_URL) {
-    try {
-      const solverController = new AbortController();
-      const solverTimer = setTimeout(() => solverController.abort(), 6e4);
-      const solverResp = await fetch(`${FLARESOLVERR_URL.replace(/\/$/, "")}/v1`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          cmd: "request.get",
-          url: fullUrl,
-          maxTimeout: 55e3
-        }),
-        signal: solverController.signal
-      });
-      clearTimeout(solverTimer);
-      if (solverResp.ok) {
-        const solverJson = await solverResp.json();
-        if (solverJson.status === "ok" && solverJson.solution?.response) {
-          const solverText = solverJson.solution.response;
-          if (!solverText.includes("Just a moment...") && !solverText.includes("cf-browser-verification")) {
-            return solverText;
-          }
-          console.warn("FlareSolverr returned a Cloudflare challenge page:", fullUrl);
-        }
-      }
-    } catch (solverErr) {
-      console.warn(`FlareSolverr failed (${solverErr.message}), falling through to Worker proxy.`);
-    }
-  }
   const proxyGateway = process.env.PROXY_URL || process.env.SCRAPER_PROXY || "";
   if (proxyGateway) {
     try {
       const proxiedUrl = buildProxyUrl(proxyGateway, fullUrl);
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 12e3);
+      const timer = setTimeout(() => controller.abort(), 6e3);
       const proxyResp = await fetch(proxiedUrl, {
         method: "GET",
         signal: controller.signal
@@ -250,26 +220,17 @@ async function fetchPage(path2, options = {}) {
         if (!text.includes("Just a moment...") && !text.includes("cf-browser-verification") && !text.includes("Checking your browser")) {
           return text;
         }
-        console.warn(`Proxy gateway (${proxyGateway}) returned Cloudflare challenge on: ${proxiedUrl}`);
-        if (process.env.NODE_ENV === "production") {
-          throw new Error(`Proxy gateway is being challenged by Cloudflare. Please update your Worker script.`);
-        }
       } else if (proxyResp.status === 404) {
         const notFoundErr = new Error("Page not found (404)");
         notFoundErr.status = 404;
         throw notFoundErr;
-      } else {
-        console.warn(`Proxy gateway returned status ${proxyResp.status} on: ${proxiedUrl}`);
       }
     } catch (proxyErr) {
-      if (proxyErr.status === 404 || proxyErr.message.includes("Please update your Worker script")) throw proxyErr;
-      console.warn(`Proxy gateway request failed (${proxyErr.message}) on: ${proxyGateway}`);
+      if (proxyErr.status === 404) throw proxyErr;
     }
   }
-  const timeoutMs = options.timeoutMs || 14e3;
+  const timeoutMs = options.timeoutMs || 6e3;
   const headerProfiles = isAjax ? [AJAX_HEADERS] : [CHROME_HEADERS, MINIMAL_HEADERS];
-  let lastStatus = 0;
-  let lastBodySnippet = "";
   for (const headers of headerProfiles) {
     try {
       const controller = new AbortController();
@@ -281,25 +242,47 @@ async function fetchPage(path2, options = {}) {
         redirect: "follow"
       });
       clearTimeout(timer);
-      lastStatus = resp.status;
       if (resp.ok) {
         const text = await resp.text();
         if (!text.includes("Just a moment...") && !text.includes("cf-browser-verification")) {
           return text;
         }
-        console.warn(`Direct fetch hit Cloudflare challenge on: ${fullUrl}`);
       } else if (resp.status === 404) {
         const notFoundErr = new Error("Page not found (404)");
         notFoundErr.status = 404;
         throw notFoundErr;
-      } else {
-        const text = await resp.text().catch(() => "");
-        lastBodySnippet = text.slice(0, 160).replace(/\s+/g, " ").trim();
-        console.warn(`Native fetch returned status ${resp.status} on: ${fullUrl}`);
       }
     } catch (err) {
       if (err.status === 404) throw err;
-      console.warn(`Native fetch error (${err.message}) on: ${fullUrl}`);
+    }
+  }
+  const FLARESOLVERR_URL = getFlareSolverrUrl();
+  if (FLARESOLVERR_URL) {
+    try {
+      const solverController = new AbortController();
+      const solverTimer = setTimeout(() => solverController.abort(), 6e3);
+      const solverResp = await fetch(`${FLARESOLVERR_URL.replace(/\/+$/, "")}/v1`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cmd: "request.get",
+          url: fullUrl,
+          maxTimeout: 5e3
+        }),
+        signal: solverController.signal
+      });
+      clearTimeout(solverTimer);
+      if (solverResp.ok) {
+        const solverJson = await solverResp.json();
+        if (solverJson.status === "ok" && solverJson.solution?.response) {
+          const solverText = solverJson.solution.response;
+          if (!solverText.includes("Just a moment...") && !solverText.includes("cf-browser-verification")) {
+            return solverText;
+          }
+        }
+      }
+    } catch (solverErr) {
+      console.warn("FlareSolverr fallback timed out or failed:", solverErr.message);
     }
   }
   try {
@@ -309,9 +292,7 @@ async function fetchPage(path2, options = {}) {
       decompress: true,
       maxRedirects: 5
     });
-    if (typeof axiosResp.data === "string") {
-      return axiosResp.data;
-    }
+    if (typeof axiosResp.data === "string") return axiosResp.data;
     return JSON.stringify(axiosResp.data);
   } catch (axiosErr) {
     if (axiosErr.response?.status === 404) {
@@ -319,9 +300,7 @@ async function fetchPage(path2, options = {}) {
       notFoundErr.status = 404;
       throw notFoundErr;
     }
-    const status = axiosErr.response?.status || lastStatus;
-    const details = axiosErr.response?.data ? String(axiosErr.response.data).slice(0, 160).replace(/\s+/g, " ").trim() : lastBodySnippet || axiosErr.message;
-    throw new Error(`Upstream AnimeSalt HTTP ${status}: ${details}`);
+    throw new Error(`Upstream HTTP error: ${axiosErr.message}`);
   }
 }
 function extractAnimeList(html) {
@@ -502,7 +481,7 @@ router.get("/health", async (_req, res) => {
   let upstreamLatency = 0;
   let upstreamError = null;
   try {
-    const html = await fetchPage("/", { timeoutMs: 8e3 });
+    const html = await fetchPage("/", { timeoutMs: 5e3 });
     upstreamOnline = typeof html === "string" && (html.includes("animesalt") || html.includes("<html"));
     upstreamLatency = Math.round(performance.now() - t0);
   } catch (err) {
@@ -520,7 +499,7 @@ router.get("/health", async (_req, res) => {
       latencyMs: upstreamLatency,
       error: upstreamError
     },
-    version: "2.2.0",
+    version: "2.3.0",
     endpointsCount: 13
   });
 });
@@ -541,15 +520,19 @@ router.get("/debug", async (_req, res) => {
   if (flareSolverrUrl) {
     try {
       const ft0 = performance.now();
+      const solverController = new AbortController();
+      const solverTimer = setTimeout(() => solverController.abort(), 4e3);
       const solverResp = await fetch(`${flareSolverrUrl.replace(/\/+$/, "")}/v1`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           cmd: "request.get",
           url: `${BASE_URL}/`,
-          maxTimeout: 3e4
-        })
+          maxTimeout: 3500
+        }),
+        signal: solverController.signal
       });
+      clearTimeout(solverTimer);
       const fDuration = Math.round(performance.now() - ft0);
       const solverText = await solverResp.text();
       try {

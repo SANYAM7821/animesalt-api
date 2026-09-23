@@ -139,7 +139,7 @@ const AJAX_HEADERS: Record<string, string> = {
 
 const client = axios.create({
   baseURL: BASE_URL,
-  timeout: 15000,
+  timeout: 10000,
   headers: CHROME_HEADERS,
   decompress: true,
   maxRedirects: 5,
@@ -147,7 +147,7 @@ const client = axios.create({
 
 const ajaxClient = axios.create({
   baseURL: BASE_URL,
-  timeout: 15000,
+  timeout: 10000,
   headers: AJAX_HEADERS,
   decompress: true,
   maxRedirects: 5,
@@ -226,46 +226,13 @@ async function fetchPage(path: string, options: FetchPageOptions = {}): Promise<
     fullUrl = urlObj.toString();
   }
 
-  // -1. FlareSolverr: Real Chromium browser bypass
-  const FLARESOLVERR_URL = getFlareSolverrUrl();
-  if (FLARESOLVERR_URL) {
-    try {
-      const solverController = new AbortController();
-      const solverTimer = setTimeout(() => solverController.abort(), 60000);
-      const solverResp = await fetch(`${FLARESOLVERR_URL.replace(/\/$/, "")}/v1`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          cmd: "request.get",
-          url: fullUrl,
-          maxTimeout: 55000,
-        }),
-        signal: solverController.signal,
-      });
-      clearTimeout(solverTimer);
-      if (solverResp.ok) {
-        const solverJson = await solverResp.json() as any;
-        if (solverJson.status === "ok" && solverJson.solution?.response) {
-          const solverText: string = solverJson.solution.response;
-          if (!solverText.includes("Just a moment...") && !solverText.includes("cf-browser-verification")) {
-            return solverText;
-          }
-          console.warn("FlareSolverr returned a Cloudflare challenge page:", fullUrl);
-        }
-      }
-    } catch (solverErr: any) {
-      console.warn(`FlareSolverr failed (${solverErr.message}), falling through to Worker proxy.`);
-    }
-  }
-
-  // 0. Cloudflare Worker proxy / scraper gateway
+  // 1. Fast Path: Cloudflare Worker Proxy / Scraper Gateway (~150ms)
   const proxyGateway = process.env.PROXY_URL || process.env.SCRAPER_PROXY || "";
-
   if (proxyGateway) {
     try {
       const proxiedUrl = buildProxyUrl(proxyGateway, fullUrl);
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 12000);
+      const timer = setTimeout(() => controller.abort(), 6000);
 
       const proxyResp = await fetch(proxiedUrl, {
         method: "GET",
@@ -278,31 +245,19 @@ async function fetchPage(path: string, options: FetchPageOptions = {}): Promise<
         if (!text.includes("Just a moment...") && !text.includes("cf-browser-verification") && !text.includes("Checking your browser")) {
           return text;
         }
-        console.warn(`Proxy gateway (${proxyGateway}) returned Cloudflare challenge on: ${proxiedUrl}`);
-        if (process.env.NODE_ENV === "production") {
-          throw new Error(`Proxy gateway is being challenged by Cloudflare. Please update your Worker script.`);
-        }
       } else if (proxyResp.status === 404) {
         const notFoundErr: any = new Error("Page not found (404)");
         notFoundErr.status = 404;
         throw notFoundErr;
-      } else {
-        console.warn(`Proxy gateway returned status ${proxyResp.status} on: ${proxiedUrl}`);
       }
     } catch (proxyErr: any) {
-      if (proxyErr.status === 404 || proxyErr.message.includes("Please update your Worker script")) throw proxyErr;
-      console.warn(`Proxy gateway request failed (${proxyErr.message}) on: ${proxyGateway}`);
+      if (proxyErr.status === 404) throw proxyErr;
     }
   }
 
-  const timeoutMs = options.timeoutMs || 14000;
-
-  const headerProfiles = isAjax
-    ? [AJAX_HEADERS]
-    : [CHROME_HEADERS, MINIMAL_HEADERS];
-
-  let lastStatus = 0;
-  let lastBodySnippet = "";
+  // 2. Direct Fetch with Chrome headers (~150ms)
+  const timeoutMs = options.timeoutMs || 6000;
+  const headerProfiles = isAjax ? [AJAX_HEADERS] : [CHROME_HEADERS, MINIMAL_HEADERS];
 
   for (const headers of headerProfiles) {
     try {
@@ -317,29 +272,53 @@ async function fetchPage(path: string, options: FetchPageOptions = {}): Promise<
       });
       clearTimeout(timer);
 
-      lastStatus = resp.status;
-
       if (resp.ok) {
         const text = await resp.text();
         if (!text.includes("Just a moment...") && !text.includes("cf-browser-verification")) {
           return text;
         }
-        console.warn(`Direct fetch hit Cloudflare challenge on: ${fullUrl}`);
       } else if (resp.status === 404) {
         const notFoundErr: any = new Error("Page not found (404)");
         notFoundErr.status = 404;
         throw notFoundErr;
-      } else {
-        const text = await resp.text().catch(() => "");
-        lastBodySnippet = text.slice(0, 160).replace(/\s+/g, " ").trim();
-        console.warn(`Native fetch returned status ${resp.status} on: ${fullUrl}`);
       }
     } catch (err: any) {
       if (err.status === 404) throw err;
-      console.warn(`Native fetch error (${err.message}) on: ${fullUrl}`);
     }
   }
 
+  // 3. FlareSolverr Fallback (ONLY if Proxy & Direct fetch hit Cloudflare challenge)
+  const FLARESOLVERR_URL = getFlareSolverrUrl();
+  if (FLARESOLVERR_URL) {
+    try {
+      const solverController = new AbortController();
+      const solverTimer = setTimeout(() => solverController.abort(), 6000);
+      const solverResp = await fetch(`${FLARESOLVERR_URL.replace(/\/+$/, "")}/v1`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cmd: "request.get",
+          url: fullUrl,
+          maxTimeout: 5000,
+        }),
+        signal: solverController.signal,
+      });
+      clearTimeout(solverTimer);
+      if (solverResp.ok) {
+        const solverJson = await solverResp.json() as any;
+        if (solverJson.status === "ok" && solverJson.solution?.response) {
+          const solverText: string = solverJson.solution.response;
+          if (!solverText.includes("Just a moment...") && !solverText.includes("cf-browser-verification")) {
+            return solverText;
+          }
+        }
+      }
+    } catch (solverErr: any) {
+      console.warn("FlareSolverr fallback timed out or failed:", solverErr.message);
+    }
+  }
+
+  // 4. Secondary Axios Backup
   try {
     const axiosClient = isAjax ? ajaxClient : client;
     const axiosResp = await axiosClient.get(fullUrl, {
@@ -347,9 +326,7 @@ async function fetchPage(path: string, options: FetchPageOptions = {}): Promise<
       decompress: true,
       maxRedirects: 5,
     });
-    if (typeof axiosResp.data === "string") {
-      return axiosResp.data;
-    }
+    if (typeof axiosResp.data === "string") return axiosResp.data;
     return JSON.stringify(axiosResp.data);
   } catch (axiosErr: any) {
     if (axiosErr.response?.status === 404) {
@@ -357,12 +334,7 @@ async function fetchPage(path: string, options: FetchPageOptions = {}): Promise<
       notFoundErr.status = 404;
       throw notFoundErr;
     }
-    const status = axiosErr.response?.status || lastStatus;
-    const details = axiosErr.response?.data
-      ? String(axiosErr.response.data).slice(0, 160).replace(/\s+/g, " ").trim()
-      : (lastBodySnippet || axiosErr.message);
-
-    throw new Error(`Upstream AnimeSalt HTTP ${status}: ${details}`);
+    throw new Error(`Upstream HTTP error: ${axiosErr.message}`);
   }
 }
 
@@ -595,7 +567,7 @@ router.get("/health", async (_req, res) => {
   let upstreamLatency = 0;
   let upstreamError: string | null = null;
   try {
-    const html = await fetchPage("/", { timeoutMs: 8000 });
+    const html = await fetchPage("/", { timeoutMs: 5000 });
     upstreamOnline = typeof html === "string" && (html.includes("animesalt") || html.includes("<html"));
     upstreamLatency = Math.round(performance.now() - t0);
   } catch (err: any) {
@@ -614,7 +586,7 @@ router.get("/health", async (_req, res) => {
       latencyMs: upstreamLatency,
       error: upstreamError,
     },
-    version: "2.2.0",
+    version: "2.3.0",
     endpointsCount: 13,
   });
 });
@@ -639,15 +611,20 @@ router.get("/debug", async (_req, res) => {
   if (flareSolverrUrl) {
     try {
       const ft0 = performance.now();
+      const solverController = new AbortController();
+      const solverTimer = setTimeout(() => solverController.abort(), 4000);
       const solverResp = await fetch(`${flareSolverrUrl.replace(/\/+$/, "")}/v1`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           cmd: "request.get",
           url: `${BASE_URL}/`,
-          maxTimeout: 30000,
+          maxTimeout: 3500,
         }),
+        signal: solverController.signal,
       });
+      clearTimeout(solverTimer);
+
       const fDuration = Math.round(performance.now() - ft0);
       const solverText = await solverResp.text();
       try {
