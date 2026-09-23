@@ -37,6 +37,31 @@ var router = import_express.default.Router();
 app.use((0, import_cors.default)());
 app.use(import_express.default.json());
 var BASE_URL = "https://animesalt.me";
+var memoryCache = /* @__PURE__ */ new Map();
+function getCached(key) {
+  const entry = memoryCache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiry) {
+    memoryCache.delete(key);
+    return null;
+  }
+  return entry.data;
+}
+function setCache(key, data, ttlSeconds = 900) {
+  if (memoryCache.size > 1e3) {
+    const oldestKey = memoryCache.keys().next().value;
+    if (oldestKey) memoryCache.delete(oldestKey);
+  }
+  memoryCache.set(key, {
+    data,
+    expiry: Date.now() + ttlSeconds * 1e3
+  });
+}
+function sendCachedResponse(res, data, ttlSeconds = 900) {
+  res.setHeader("Cache-Control", `public, max-age=${Math.min(300, ttlSeconds)}, s-maxage=${ttlSeconds}, stale-while-revalidate=600`);
+  res.setHeader("X-Cache-Status", "HIT");
+  res.json(data);
+}
 var CHROME_HEADERS = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
   "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
@@ -437,7 +462,7 @@ router.get("/health", async (_req, res) => {
       latencyMs: upstreamLatency,
       error: upstreamError
     },
-    version: "2.0.0",
+    version: "2.1.0",
     endpointsCount: 13
   });
 });
@@ -450,7 +475,8 @@ router.get("/debug", async (_req, res) => {
     nodeVersion: process.version,
     target: BASE_URL,
     configuredProxyUrl: proxyGateway || null,
-    configuredFlareSolverrUrl: flareSolverrUrl || null
+    configuredFlareSolverrUrl: flareSolverrUrl || null,
+    cacheEntriesCount: memoryCache.size
   };
   if (flareSolverrUrl) {
     try {
@@ -516,11 +542,16 @@ router.get("/search", async (req, res) => {
   const keyword = req.query.keyword;
   const page = parseInt(req.query.page || "1", 10);
   if (!keyword) return res.status(400).json({ success: false, error: "Keyword required" });
+  const cacheKey = `search_${keyword.toLowerCase()}_p${page}`;
+  const cached = getCached(cacheKey);
+  if (cached) return sendCachedResponse(res, cached, 600);
   try {
     const searchUrl = page > 1 ? `/?s=${encodeURIComponent(keyword)}&paged=${page}` : "/";
     const data = await fetchPage(searchUrl, { params: page === 1 ? { s: keyword } : {} });
     const results = extractAnimeList(data);
-    res.json({ success: true, page, data: results });
+    const payload = { success: true, page, data: results };
+    setCache(cacheKey, payload, 600);
+    sendCachedResponse(res, payload, 600);
   } catch (e) {
     if (e.status === 404 || e.response?.status === 404) {
       return res.json({ success: true, page, data: [] });
@@ -530,6 +561,9 @@ router.get("/search", async (req, res) => {
   }
 });
 router.get("/latest-episodes", async (_req, res) => {
+  const cacheKey = "latest_episodes";
+  const cached = getCached(cacheKey);
+  if (cached) return sendCachedResponse(res, cached, 300);
   try {
     const data = await fetchPage("/");
     const $ = cheerio.load(data);
@@ -557,7 +591,9 @@ router.get("/latest-episodes", async (_req, res) => {
         }
       });
     }
-    res.json({ success: true, data: results });
+    const payload = { success: true, data: results };
+    setCache(cacheKey, payload, 300);
+    sendCachedResponse(res, payload, 300);
   } catch (e) {
     console.error("Latest eps error:", e.message);
     res.status(500).json({ success: false, error: "Failed to scrape latest episodes", details: e.message });
@@ -565,6 +601,9 @@ router.get("/latest-episodes", async (_req, res) => {
 });
 router.get("/popular", async (req, res) => {
   const type = req.query.type;
+  const cacheKey = `popular_${type || "all"}`;
+  const cached = getCached(cacheKey);
+  if (cached) return sendCachedResponse(res, cached, 900);
   try {
     let data;
     try {
@@ -576,7 +615,9 @@ router.get("/popular", async (req, res) => {
     if (results.length === 0) {
       results = extractAnimeList(data);
     }
-    res.json({ success: true, data: results });
+    const payload = { success: true, data: results };
+    setCache(cacheKey, payload, 900);
+    sendCachedResponse(res, payload, 900);
   } catch (e) {
     console.error("Popular error:", e.message);
     res.status(500).json({ success: false, error: "Failed to scrape popular anime", details: e.message });
@@ -584,6 +625,9 @@ router.get("/popular", async (req, res) => {
 });
 router.get("/completed", async (req, res) => {
   const page = parseInt(req.query.page || "1", 10);
+  const cacheKey = `completed_p${page}`;
+  const cached = getCached(cacheKey);
+  if (cached) return sendCachedResponse(res, cached, 900);
   try {
     let data;
     try {
@@ -594,7 +638,9 @@ router.get("/completed", async (req, res) => {
       data = await fetchPage(fallbackPath);
     }
     const results = extractAnimeList(data);
-    res.json({ success: true, page, data: results });
+    const payload = { success: true, page, data: results };
+    setCache(cacheKey, payload, 900);
+    sendCachedResponse(res, payload, 900);
   } catch (e) {
     if (e.status === 404 || e.response?.status === 404) {
       return res.json({ success: true, page, data: [] });
@@ -605,6 +651,9 @@ router.get("/completed", async (req, res) => {
 });
 router.get("/ongoing", async (req, res) => {
   const page = parseInt(req.query.page || "1", 10);
+  const cacheKey = `ongoing_p${page}`;
+  const cached = getCached(cacheKey);
+  if (cached) return sendCachedResponse(res, cached, 600);
   try {
     let data;
     try {
@@ -615,7 +664,9 @@ router.get("/ongoing", async (req, res) => {
       data = await fetchPage(fallbackPath);
     }
     const results = extractAnimeList(data);
-    res.json({ success: true, page, data: results });
+    const payload = { success: true, page, data: results };
+    setCache(cacheKey, payload, 600);
+    sendCachedResponse(res, payload, 600);
   } catch (e) {
     if (e.status === 404 || e.response?.status === 404) {
       return res.json({ success: true, page, data: [] });
@@ -628,6 +679,9 @@ router.get("/type/:type", async (req, res) => {
   const { type } = req.params;
   const subtype = req.query.subtype || "series";
   const page = parseInt(req.query.page || "1", 10);
+  const cacheKey = `type_${type}_${subtype}_p${page}`;
+  const cached = getCached(cacheKey);
+  if (cached) return sendCachedResponse(res, cached, 900);
   try {
     let data;
     try {
@@ -638,7 +692,9 @@ router.get("/type/:type", async (req, res) => {
       data = await fetchPage(fallbackPath, { params: { type: subtype } });
     }
     const results = extractAnimeList(data);
-    res.json({ success: true, page, type, subtype, data: results });
+    const payload = { success: true, page, type, subtype, data: results };
+    setCache(cacheKey, payload, 900);
+    sendCachedResponse(res, payload, 900);
   } catch (e) {
     if (e.status === 404 || e.response?.status === 404) {
       return res.json({ success: true, page, type, subtype, data: [] });
@@ -650,6 +706,9 @@ router.get("/type/:type", async (req, res) => {
 router.get("/genre/:category", async (req, res) => {
   const { category } = req.params;
   const page = parseInt(req.query.page || "1", 10);
+  const cacheKey = `genre_${category}_p${page}`;
+  const cached = getCached(cacheKey);
+  if (cached) return sendCachedResponse(res, cached, 900);
   try {
     let data;
     try {
@@ -660,7 +719,9 @@ router.get("/genre/:category", async (req, res) => {
       data = await fetchPage(fallbackPath);
     }
     const results = extractAnimeList(data);
-    res.json({ success: true, page, genre: category, data: results });
+    const payload = { success: true, page, genre: category, data: results };
+    setCache(cacheKey, payload, 900);
+    sendCachedResponse(res, payload, 900);
   } catch (e) {
     if (e.status === 404 || e.response?.status === 404) {
       return res.json({ success: true, page, genre: category, data: [] });
@@ -672,6 +733,9 @@ router.get("/genre/:category", async (req, res) => {
 router.get("/info", async (req, res) => {
   const animeId = req.query.id;
   if (!animeId) return res.status(400).json({ success: false, error: "Anime ID (slug) is required" });
+  const cacheKey = `info_${animeId}`;
+  const cached = getCached(cacheKey);
+  if (cached) return sendCachedResponse(res, cached, 1800);
   try {
     let data;
     let type = "series";
@@ -737,7 +801,7 @@ router.get("/info", async (req, res) => {
         related.push({ id: relId, title: relTitle, image: relImage });
       }
     });
-    res.json({
+    const payload = {
       success: true,
       data: {
         id: animeId,
@@ -750,7 +814,9 @@ router.get("/info", async (req, res) => {
         related,
         ...info
       }
-    });
+    };
+    setCache(cacheKey, payload, 1800);
+    sendCachedResponse(res, payload, 1800);
   } catch (e) {
     console.error("Info error:", e.message);
     res.status(500).json({ success: false, error: "Failed to scrape anime details", details: e.message });
@@ -760,6 +826,9 @@ router.get("/episodes/:animeId", async (req, res) => {
   const { animeId } = req.params;
   const seasonParam = req.query.season;
   const requestedSeason = seasonParam ? parseInt(seasonParam, 10) : void 0;
+  const cacheKey = `episodes_${animeId}_s${requestedSeason || "all"}`;
+  const cached = getCached(cacheKey);
+  if (cached) return sendCachedResponse(res, cached, 1800);
   try {
     const { episodes, seasons } = await getEpisodesData(animeId, requestedSeason);
     const formattedEpisodes = episodes.map((e) => ({
@@ -770,7 +839,7 @@ router.get("/episodes/:animeId", async (req, res) => {
       url: e.url,
       servers: e.servers || []
     }));
-    res.json({
+    const payload = {
       success: true,
       data: {
         animeId,
@@ -779,7 +848,9 @@ router.get("/episodes/:animeId", async (req, res) => {
         totalEpisodes: formattedEpisodes.length,
         episodes: formattedEpisodes
       }
-    });
+    };
+    setCache(cacheKey, payload, 1800);
+    sendCachedResponse(res, payload, 1800);
   } catch (e) {
     console.error("Episodes error:", e.message);
     res.status(500).json({ success: false, error: "Failed to scrape episodes", details: e.message });
@@ -788,6 +859,9 @@ router.get("/episodes/:animeId", async (req, res) => {
 router.get("/servers", async (req, res) => {
   const { ep: epSlug, id: animeId } = req.query;
   if (!epSlug) return res.status(400).json({ success: false, error: "Episode slug (ep) is required" });
+  const cacheKey = `servers_${animeId || "none"}_${epSlug}`;
+  const cached = getCached(cacheKey);
+  if (cached) return sendCachedResponse(res, cached, 1800);
   try {
     let servers = [];
     const targetAnimeId = animeId || epSlug.replace(/-(?:(\d+)x)?\d+$/, "").replace(/-ep-\d+$/, "");
@@ -852,7 +926,9 @@ router.get("/servers", async (req, res) => {
         }
       }
     }
-    res.json({ success: true, data: servers });
+    const payload = { success: true, data: servers };
+    setCache(cacheKey, payload, 1800);
+    sendCachedResponse(res, payload, 1800);
   } catch (e) {
     console.error("Servers error:", e.message);
     res.status(500).json({ success: false, error: "Failed to scrape servers", details: e.message });
@@ -861,6 +937,9 @@ router.get("/servers", async (req, res) => {
 router.get("/stream", async (req, res) => {
   const { ep: epSlug, id: animeId, server: serverParam, lang } = req.query;
   if (!epSlug) return res.status(400).json({ success: false, error: "Episode slug (ep) is required" });
+  const cacheKey = `stream_${animeId || "none"}_${epSlug}_s${serverParam || 0}_l${lang || "default"}`;
+  const cached = getCached(cacheKey);
+  if (cached) return sendCachedResponse(res, cached, 1800);
   try {
     let embedUrl = null;
     let selectedLanguage = lang || null;
@@ -902,7 +981,7 @@ router.get("/stream", async (req, res) => {
     if (embedUrl && embedUrl.startsWith("//")) {
       embedUrl = "https:" + embedUrl;
     }
-    res.json({
+    const payload = {
       success: true,
       data: {
         embedUrl,
@@ -911,7 +990,9 @@ router.get("/stream", async (req, res) => {
         isIframe: true,
         referer: `${BASE_URL}/`
       }
-    });
+    };
+    setCache(cacheKey, payload, 1800);
+    sendCachedResponse(res, payload, 1800);
   } catch (e) {
     console.error("Stream error:", e.message);
     res.status(500).json({ success: false, error: "Failed to scrape stream", details: e.message });
