@@ -551,14 +551,24 @@ router.get("/debug", async (_req, res) => {
         })
       });
       const fDuration = Math.round(performance.now() - ft0);
-      const solverJson = await solverResp.json();
-      result.flareSolverrDiagnostic = {
-        status: solverResp.status,
-        durationMs: fDuration,
-        solutionStatus: solverJson.status,
-        isChallenge: solverJson.solution?.response ? solverJson.solution.response.includes("Just a moment...") : true,
-        preview: solverJson.solution?.response ? solverJson.solution.response.slice(0, 150).replace(/\s+/g, " ").trim() : solverJson.message
-      };
+      const solverText = await solverResp.text();
+      try {
+        const solverJson = JSON.parse(solverText);
+        result.flareSolverrDiagnostic = {
+          status: solverResp.status,
+          durationMs: fDuration,
+          solutionStatus: solverJson.status,
+          isChallenge: solverJson.solution?.response ? solverJson.solution.response.includes("Just a moment...") : true,
+          preview: solverJson.solution?.response ? solverJson.solution.response.slice(0, 150).replace(/\s+/g, " ").trim() : solverJson.message
+        };
+      } catch {
+        result.flareSolverrDiagnostic = {
+          status: solverResp.status,
+          durationMs: fDuration,
+          error: "FlareSolverr server (Render) was sleeping or returned non-JSON",
+          preview: solverText.slice(0, 150).replace(/\s+/g, " ").trim()
+        };
+      }
     } catch (fErr) {
       result.flareSolverrDiagnostic = { error: fErr.message };
     }
