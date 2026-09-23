@@ -790,10 +790,15 @@ router.get("/servers", async (req, res) => {
   if (!epSlug) return res.status(400).json({ success: false, error: "Episode slug (ep) is required" });
   try {
     let servers = [];
-    if (animeId) {
+    const targetAnimeId = animeId || epSlug.replace(/-(?:(\d+)x)?\d+$/, "").replace(/-ep-\d+$/, "");
+    if (targetAnimeId) {
       try {
-        const { episodes } = await getEpisodesData(animeId);
-        const matchedEp = episodes.find((e) => e.slug === epSlug || e.slug === `ep-${epSlug}` || String(e.num) === epSlug);
+        const { episodes } = await getEpisodesData(targetAnimeId);
+        const epNumMatch = epSlug.match(/(?:(\d+)x)?(\d+)$/) || epSlug.match(/ep-(\d+)/);
+        const epNum = epNumMatch ? parseInt(epNumMatch[2] || epNumMatch[1], 10) : null;
+        const matchedEp = episodes.find(
+          (e) => e.slug === epSlug || e.slug === `ep-${epSlug}` || String(e.num) === epSlug || epNum !== null && e.num === epNum
+        );
         if (matchedEp && matchedEp.servers && matchedEp.servers.length > 0) {
           servers = matchedEp.servers.map((s, idx) => ({
             index: idx,
@@ -808,35 +813,43 @@ router.get("/servers", async (req, res) => {
       }
     }
     if (servers.length === 0) {
-      const epUrl = `/episode/${epSlug}/`;
-      const data = await fetchPage(epUrl);
-      const $ = cheerio.load(data);
-      $(".server-btn").each((index, el) => {
-        const serverNameHeader = $(el).find(".server-name").text().trim() || `SERVER ${index + 1}`;
-        const serverInfo = $(el).find(".server-info").text().trim();
-        const fullName = serverInfo ? `${serverNameHeader} - ${serverInfo}` : serverNameHeader;
-        const videoContainer = $(`#options-${index}`).length ? $(`#options-${index}`) : $(".video.aa-tb").eq(index);
-        const iframe = videoContainer.find("iframe");
-        const embedUrl = iframe.attr("src") || iframe.attr("data-src") || "";
-        servers.push({
-          index,
-          serverName: fullName,
-          embedUrl: embedUrl || null,
-          isMultiLang: false
+      let data = "";
+      try {
+        data = await fetchPage(`/episode/${epSlug}/`);
+      } catch {
+        if (targetAnimeId) {
+          data = await fetchPage(`/tv/${targetAnimeId}/`);
+        }
+      }
+      if (data) {
+        const $ = cheerio.load(data);
+        $(".server-btn").each((index, el) => {
+          const serverNameHeader = $(el).find(".server-name").text().trim() || `SERVER ${index + 1}`;
+          const serverInfo = $(el).find(".server-info").text().trim();
+          const fullName = serverInfo ? `${serverNameHeader} - ${serverInfo}` : serverNameHeader;
+          const videoContainer = $(`#options-${index}`).length ? $(`#options-${index}`) : $(".video.aa-tb").eq(index);
+          const iframe = videoContainer.find("iframe");
+          const embedUrl = iframe.attr("src") || iframe.attr("data-src") || "";
+          servers.push({
+            index,
+            serverName: fullName,
+            embedUrl: embedUrl || null,
+            isMultiLang: false
+          });
         });
-      });
-      if (servers.length === 0) {
-        $("iframe").each((i, el) => {
-          const src = $(el).attr("src") || $(el).attr("data-src") || "";
-          if (src && !src.includes("google") && !src.includes("facebook") && !src.includes("ad")) {
-            servers.push({
-              index: i,
-              serverName: `Server ${i + 1}`,
-              embedUrl: src,
-              isMultiLang: false
-            });
-          }
-        });
+        if (servers.length === 0) {
+          $("iframe").each((i, el) => {
+            const src = $(el).attr("src") || $(el).attr("data-src") || "";
+            if (src && !src.includes("google") && !src.includes("facebook") && !src.includes("ad")) {
+              servers.push({
+                index: i,
+                serverName: `Server ${i + 1}`,
+                embedUrl: src,
+                isMultiLang: false
+              });
+            }
+          });
+        }
       }
     }
     res.json({ success: true, data: servers });
@@ -852,10 +865,15 @@ router.get("/stream", async (req, res) => {
     let embedUrl = null;
     let selectedLanguage = lang || null;
     const serverIndex = parseInt(serverParam || "0", 10);
-    if (animeId) {
+    const targetAnimeId = animeId || epSlug.replace(/-(?:(\d+)x)?\d+$/, "").replace(/-ep-\d+$/, "");
+    if (targetAnimeId) {
       try {
-        const { episodes } = await getEpisodesData(animeId);
-        const matchedEp = episodes.find((e) => e.slug === epSlug || e.slug === `ep-${epSlug}` || String(e.num) === epSlug);
+        const { episodes } = await getEpisodesData(targetAnimeId);
+        const epNumMatch = epSlug.match(/(?:(\d+)x)?(\d+)$/) || epSlug.match(/ep-(\d+)/);
+        const epNum = epNumMatch ? parseInt(epNumMatch[2] || epNumMatch[1], 10) : null;
+        const matchedEp = episodes.find(
+          (e) => e.slug === epSlug || e.slug === `ep-${epSlug}` || String(e.num) === epSlug || epNum !== null && e.num === epNum
+        );
         if (matchedEp && matchedEp.servers && matchedEp.servers.length > 0) {
           const s = matchedEp.servers[serverIndex] || matchedEp.servers[0];
           embedUrl = s.url || null;
@@ -866,12 +884,20 @@ router.get("/stream", async (req, res) => {
       }
     }
     if (!embedUrl) {
-      const epUrl = `/episode/${epSlug}/`;
-      const data = await fetchPage(epUrl);
-      const $ = cheerio.load(data);
-      const videoContainer = $(`#options-${serverIndex}`).length ? $(`#options-${serverIndex}`) : $(".video.aa-tb").eq(serverIndex);
-      const iframe = videoContainer.find("iframe").length ? videoContainer.find("iframe") : $("iframe").eq(serverIndex);
-      embedUrl = iframe.attr("src") || iframe.attr("data-src") || null;
+      let data = "";
+      try {
+        data = await fetchPage(`/episode/${epSlug}/`);
+      } catch {
+        if (targetAnimeId) {
+          data = await fetchPage(`/tv/${targetAnimeId}/`);
+        }
+      }
+      if (data) {
+        const $ = cheerio.load(data);
+        const videoContainer = $(`#options-${serverIndex}`).length ? $(`#options-${serverIndex}`) : $(".video.aa-tb").eq(serverIndex);
+        const iframe = videoContainer.find("iframe").length ? videoContainer.find("iframe") : $("iframe").eq(serverIndex);
+        embedUrl = iframe.attr("src") || iframe.attr("data-src") || null;
+      }
     }
     if (embedUrl && embedUrl.startsWith("//")) {
       embedUrl = "https:" + embedUrl;
