@@ -159,6 +159,31 @@ interface FetchPageOptions {
   timeoutMs?: number;
 }
 
+const DEFAULT_FLARESOLVERR_URL = "https://flaresolverr-latest-yyn1.onrender.com";
+
+function getFlareSolverrUrl(): string | null {
+  const envCandidates = [
+    process.env.FLARESOLVERR_URL,
+    process.env.FLARE_SOLVERR_URL,
+    process.env.FLARESOLVERR,
+    process.env.FLARESOLVER_URL,
+    process.env.FLARE_SOLVER_URL,
+    process.env.FLARE_URL,
+    process.env.FLARESOLVER,
+  ];
+
+  for (const candidate of envCandidates) {
+    if (candidate && candidate.trim()) {
+      const clean = candidate.trim().replace(/\/+$/, "");
+      if (!clean.includes("vercel.app") && !clean.includes("animesalt-api")) {
+        return clean;
+      }
+    }
+  }
+
+  return DEFAULT_FLARESOLVERR_URL;
+}
+
 /**
  * Builds the appropriate target URL for various proxy gateways (Cloudflare Worker, ScraperAPI, etc.)
  */
@@ -202,15 +227,7 @@ async function fetchPage(path: string, options: FetchPageOptions = {}): Promise<
   }
 
   // -1. FlareSolverr: Real Chromium browser bypass
-  const DEFAULT_FLARESOLVERR_URL = "https://flaresolverr-latest-yyn1.onrender.com";
-  const FLARESOLVERR_URL = process.env.FLARESOLVERR_URL ||
-                           process.env.FLARE_SOLVERR_URL ||
-                           process.env.FLARESOLVERR ||
-                           process.env.FLARESOLVER_URL ||
-                           process.env.FLARE_SOLVER_URL ||
-                           process.env.FLARE_URL ||
-                           process.env.FLARESOLVER ||
-                           DEFAULT_FLARESOLVERR_URL;
+  const FLARESOLVERR_URL = getFlareSolverrUrl();
   if (FLARESOLVERR_URL) {
     try {
       const solverController = new AbortController();
@@ -605,15 +622,7 @@ router.get("/health", async (_req, res) => {
 // Diagnostic / Debug endpoint for inspecting upstream connectivity & Cloudflare status
 router.get("/debug", async (_req, res) => {
   const proxyGateway = process.env.PROXY_URL || process.env.SCRAPER_PROXY || "";
-  const DEFAULT_FLARESOLVERR_URL = "https://flaresolverr-latest-yyn1.onrender.com";
-  const flareSolverrUrl = process.env.FLARESOLVERR_URL ||
-                           process.env.FLARE_SOLVERR_URL ||
-                           process.env.FLARESOLVERR ||
-                           process.env.FLARESOLVER_URL ||
-                           process.env.FLARE_SOLVER_URL ||
-                           process.env.FLARE_URL ||
-                           process.env.FLARESOLVER ||
-                           DEFAULT_FLARESOLVERR_URL;
+  const flareSolverrUrl = getFlareSolverrUrl();
   const redisConfigured = !!(process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN);
 
   const result: any = {
