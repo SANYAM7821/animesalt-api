@@ -202,7 +202,7 @@ async function fetchPage(path: string, options: FetchPageOptions = {}): Promise<
   }
 
   // -1. FlareSolverr: Real Chromium browser bypass
-  const FLARESOLVERR_URL = process.env.FLARESOLVERR_URL;
+  const FLARESOLVERR_URL = process.env.FLARESOLVERR_URL || process.env.FLARE_SOLVERR_URL || process.env.FLARESOLVERR;
   if (FLARESOLVERR_URL) {
     try {
       const solverController = new AbortController();
@@ -597,7 +597,7 @@ router.get("/health", async (_req, res) => {
 // Diagnostic / Debug endpoint for inspecting upstream connectivity & Cloudflare status
 router.get("/debug", async (_req, res) => {
   const proxyGateway = process.env.PROXY_URL || process.env.SCRAPER_PROXY || "";
-  const flareSolverrUrl = process.env.FLARESOLVERR_URL;
+  const flareSolverrUrl = process.env.FLARESOLVERR_URL || process.env.FLARE_SOLVERR_URL || process.env.FLARESOLVERR;
   const redisConfigured = !!(process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN);
 
   const result: any = {
