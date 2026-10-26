@@ -209,23 +209,34 @@ function getFlareSolverrUrl(): string | null {
 }
 
 /**
- * Builds the appropriate target URL for various proxy gateways (Cloudflare Worker, ScraperAPI, etc.)
+ * Builds candidate proxy URLs for various Cloudflare Worker configurations (path-based vs query-based)
  */
-function buildProxyUrl(gateway: string, targetUrl: string): string {
+function getProxyUrlVariants(gateway: string, targetUrl: string): string[] {
   const cleanGateway = gateway.trim().replace(/\/+$/, "");
+  const variants: string[] = [];
+
   if (cleanGateway.includes("%s")) {
-    return cleanGateway.replace("%s", encodeURIComponent(targetUrl));
-  }
-  if (cleanGateway.includes("url=")) {
+    variants.push(cleanGateway.replace("%s", encodeURIComponent(targetUrl)));
+  } else if (cleanGateway.includes("url=")) {
     const separator = cleanGateway.includes("?") ? "&" : "?";
-    return `${cleanGateway}${separator}url=${encodeURIComponent(targetUrl)}`;
+    variants.push(`${cleanGateway}${separator}url=${encodeURIComponent(targetUrl)}`);
+  } else if (cleanGateway.endsWith("=")) {
+    variants.push(`${cleanGateway}${encodeURIComponent(targetUrl)}`);
+  } else {
+    // Candidate 1: Path-based URL (/episode/...)
+    try {
+      const parsed = new URL(targetUrl);
+      variants.push(`${cleanGateway}${parsed.pathname}${parsed.search}`);
+    } catch {
+      const pathAndQuery = targetUrl.replace(/^https?:\/\/[^/]+/, "");
+      variants.push(`${cleanGateway}${pathAndQuery.startsWith("/") ? "" : "/"}${pathAndQuery}`);
+    }
+    // Candidate 2: Query parameter URL (?url=https://...)
+    const separator = cleanGateway.includes("?") ? "&" : "?";
+    variants.push(`${cleanGateway}${separator}url=${encodeURIComponent(targetUrl)}`);
   }
-  if (cleanGateway.endsWith("=")) {
-    return `${cleanGateway}${encodeURIComponent(targetUrl)}`;
-  }
-  // Standard Cloudflare Worker format: query parameter ?url=
-  const separator = cleanGateway.includes("?") ? "&" : "?";
-  return `${cleanGateway}${separator}url=${encodeURIComponent(targetUrl)}`;
+
+  return Array.from(new Set(variants));
 }
 
 /**
@@ -250,33 +261,39 @@ async function fetchPage(path: string, options: FetchPageOptions = {}): Promise<
   const DEFAULT_PROXY_URL = "https://animesalt-proxy.v1nx.workers.dev";
   const proxyGateways: string[] = [];
 
-  // Prioritize default working worker if PROXY_URL is empty or problematic, or test all candidates
   if (process.env.PROXY_URL && process.env.PROXY_URL.trim()) proxyGateways.push(process.env.PROXY_URL.trim());
   if (process.env.SCRAPER_PROXY && process.env.SCRAPER_PROXY.trim()) proxyGateways.push(process.env.SCRAPER_PROXY.trim());
   if (!proxyGateways.includes(DEFAULT_PROXY_URL)) proxyGateways.push(DEFAULT_PROXY_URL);
 
   for (const gateway of proxyGateways) {
-    try {
-      const proxiedUrl = buildProxyUrl(gateway, fullUrl);
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 6000);
+    const proxiedCandidates = getProxyUrlVariants(gateway, fullUrl);
+    for (const proxiedUrl of proxiedCandidates) {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 6000);
 
-      const proxyResp = await fetch(proxiedUrl, {
-        method: "GET",
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
+        const proxyResp = await fetch(proxiedUrl, {
+          method: "GET",
+          signal: controller.signal,
+        });
+        clearTimeout(timer);
 
-      if (proxyResp.ok) {
-        const text = await proxyResp.text();
-        if (!text.includes("Just a moment...") && !text.includes("cf-browser-verification") && !text.includes("Checking your browser")) {
-          return text;
+        if (proxyResp.ok) {
+          const text = await proxyResp.text();
+          if (
+            !text.includes("Just a moment...") &&
+            !text.includes("cf-browser-verification") &&
+            !text.includes("Checking your browser")
+          ) {
+            if (path.includes("/episode/") && !text.includes("server-btn") && !text.includes("options-")) {
+              continue; // Candidate returned homepage instead of requested episode page
+            }
+            return text;
+          }
         }
-      } else {
-        console.warn(`Proxy gateway (${gateway}) returned HTTP ${proxyResp.status}, trying next gateway...`);
+      } catch (proxyErr: any) {
+        console.warn(`Proxy candidate (${proxiedUrl}) failed:`, proxyErr.message);
       }
-    } catch (proxyErr: any) {
-      console.warn(`Proxy gateway (${gateway}) failed:`, proxyErr.message);
     }
   }
 

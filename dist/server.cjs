@@ -187,20 +187,28 @@ function getFlareSolverrUrl() {
   }
   return DEFAULT_FLARESOLVERR_URL;
 }
-function buildProxyUrl(gateway, targetUrl) {
+function getProxyUrlVariants(gateway, targetUrl) {
   const cleanGateway = gateway.trim().replace(/\/+$/, "");
+  const variants = [];
   if (cleanGateway.includes("%s")) {
-    return cleanGateway.replace("%s", encodeURIComponent(targetUrl));
+    variants.push(cleanGateway.replace("%s", encodeURIComponent(targetUrl)));
+  } else if (cleanGateway.includes("url=")) {
+    const separator = cleanGateway.includes("?") ? "&" : "?";
+    variants.push(`${cleanGateway}${separator}url=${encodeURIComponent(targetUrl)}`);
+  } else if (cleanGateway.endsWith("=")) {
+    variants.push(`${cleanGateway}${encodeURIComponent(targetUrl)}`);
+  } else {
+    try {
+      const parsed = new URL(targetUrl);
+      variants.push(`${cleanGateway}${parsed.pathname}${parsed.search}`);
+    } catch {
+      const pathAndQuery = targetUrl.replace(/^https?:\/\/[^/]+/, "");
+      variants.push(`${cleanGateway}${pathAndQuery.startsWith("/") ? "" : "/"}${pathAndQuery}`);
+    }
+    const separator = cleanGateway.includes("?") ? "&" : "?";
+    variants.push(`${cleanGateway}${separator}url=${encodeURIComponent(targetUrl)}`);
   }
-  if (cleanGateway.includes("url=")) {
-    const separator2 = cleanGateway.includes("?") ? "&" : "?";
-    return `${cleanGateway}${separator2}url=${encodeURIComponent(targetUrl)}`;
-  }
-  if (cleanGateway.endsWith("=")) {
-    return `${cleanGateway}${encodeURIComponent(targetUrl)}`;
-  }
-  const separator = cleanGateway.includes("?") ? "&" : "?";
-  return `${cleanGateway}${separator}url=${encodeURIComponent(targetUrl)}`;
+  return Array.from(new Set(variants));
 }
 async function fetchPage(path2, options = {}) {
   const isAjax = !!options.isAjax;
@@ -220,25 +228,28 @@ async function fetchPage(path2, options = {}) {
   if (process.env.SCRAPER_PROXY && process.env.SCRAPER_PROXY.trim()) proxyGateways.push(process.env.SCRAPER_PROXY.trim());
   if (!proxyGateways.includes(DEFAULT_PROXY_URL)) proxyGateways.push(DEFAULT_PROXY_URL);
   for (const gateway of proxyGateways) {
-    try {
-      const proxiedUrl = buildProxyUrl(gateway, fullUrl);
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 6e3);
-      const proxyResp = await fetch(proxiedUrl, {
-        method: "GET",
-        signal: controller.signal
-      });
-      clearTimeout(timer);
-      if (proxyResp.ok) {
-        const text = await proxyResp.text();
-        if (!text.includes("Just a moment...") && !text.includes("cf-browser-verification") && !text.includes("Checking your browser")) {
-          return text;
+    const proxiedCandidates = getProxyUrlVariants(gateway, fullUrl);
+    for (const proxiedUrl of proxiedCandidates) {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 6e3);
+        const proxyResp = await fetch(proxiedUrl, {
+          method: "GET",
+          signal: controller.signal
+        });
+        clearTimeout(timer);
+        if (proxyResp.ok) {
+          const text = await proxyResp.text();
+          if (!text.includes("Just a moment...") && !text.includes("cf-browser-verification") && !text.includes("Checking your browser")) {
+            if (path2.includes("/episode/") && !text.includes("server-btn") && !text.includes("options-")) {
+              continue;
+            }
+            return text;
+          }
         }
-      } else {
-        console.warn(`Proxy gateway (${gateway}) returned HTTP ${proxyResp.status}, trying next gateway...`);
+      } catch (proxyErr) {
+        console.warn(`Proxy candidate (${proxiedUrl}) failed:`, proxyErr.message);
       }
-    } catch (proxyErr) {
-      console.warn(`Proxy gateway (${gateway}) failed:`, proxyErr.message);
     }
   }
   const timeoutMs = options.timeoutMs || 6e3;
