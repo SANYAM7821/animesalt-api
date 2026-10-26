@@ -252,21 +252,27 @@ export default {
       target = url.pathname.slice(1) + url.search;
     }
 
-    // 3. Support direct reverse proxy path: /tv/naruto/ or /wp-admin/...
+    // 3. Support direct reverse proxy path: /tv/naruto/ or /episode/...
     if (!target) {
       target = "https://animesalt.cx" + url.pathname + url.search;
     }
 
+    const cleanHeaders = {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+      "Accept-Language": "en-US,en;q=0.9",
+      "Referer": "https://animesalt.cx/",
+      "sec-ch-ua": '"Not(A:Brand";v="99", "Google Chrome";v="133", "Chromium";v="133"',
+      "sec-ch-ua-mobile": "?0",
+      "sec-ch-ua-platform": '"Windows"'
+    };
+
     try {
-      const response = await fetch(target, {
-        method: request.method,
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
-          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-          "Accept-Language": "en-US,en;q=0.9",
-          "Referer": "https://animesalt.cx/",
-        },
-      });
+      // Create isolated Request object so Cloudflare Worker does not forward client IP headers
+      const response = await fetch(new Request(target, {
+        method: "GET",
+        headers: cleanHeaders
+      }));
 
       // Inject CORS headers so browsers and serverless functions can read the response
       const newHeaders = new Headers(response.headers);
