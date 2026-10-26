@@ -279,7 +279,7 @@ async function fetchPage(path: string, options: FetchPageOptions = {}): Promise<
 
         const proxyResp = await fetch(proxiedUrl, {
           method: "GET",
-          headers: CHROME_HEADERS,
+          headers: MINIMAL_HEADERS,
           signal: controller.signal,
         });
         clearTimeout(timer);

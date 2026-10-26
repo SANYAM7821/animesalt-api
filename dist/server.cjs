@@ -239,7 +239,7 @@ async function fetchPage(path2, options = {}) {
         const timer = setTimeout(() => controller.abort(), 6e3);
         const proxyResp = await fetch(proxiedUrl, {
           method: "GET",
-          headers: CHROME_HEADERS,
+          headers: MINIMAL_HEADERS,
           signal: controller.signal
         });
         clearTimeout(timer);
