@@ -344,7 +344,14 @@ export default function App() {
         const firstServer = sData.data[0];
         setSelectedServerIndex(0);
 
-        if (firstServer?.embedUrl) {
+        if (firstServer?.isMultiLang && firstServer.languages && firstServer.languages.length > 0) {
+          const defaultTrack = firstServer.languages.find((l: any) => l.language.toLowerCase() === "japanese") ||
+                               firstServer.languages.find((l: any) => l.language.toLowerCase() === "english") ||
+                               firstServer.languages[0];
+          setSelectedLang(defaultTrack.language);
+          setStreamUrl(defaultTrack.link);
+        } else if (firstServer?.embedUrl) {
+          setSelectedLang(null);
           setStreamUrl(firstServer.embedUrl);
         } else {
           const stRes = await fetch(`/api/stream?id=${aId}&ep=${episode.slug}&server=0`);
@@ -362,10 +369,17 @@ export default function App() {
 
   const handleServerChange = async (serverIndex: number, server: VideoServer) => {
     setSelectedServerIndex(serverIndex);
-    setSelectedLang(null);
-    if (server.embedUrl) {
+    if (server.isMultiLang && server.languages && server.languages.length > 0) {
+      const defaultTrack = server.languages.find((l: any) => l.language.toLowerCase() === "japanese") ||
+                           server.languages.find((l: any) => l.language.toLowerCase() === "english") ||
+                           server.languages[0];
+      setSelectedLang(defaultTrack.language);
+      setStreamUrl(defaultTrack.link);
+    } else if (server.embedUrl) {
+      setSelectedLang(null);
       setStreamUrl(server.embedUrl);
     } else if (currentEpisode && selectedAnimeId) {
+      setSelectedLang(null);
       setPlayerLoading(true);
       try {
         const res = await fetch(`/api/stream?id=${selectedAnimeId}&ep=${currentEpisode.slug}&server=${serverIndex}`);

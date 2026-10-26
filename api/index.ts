@@ -1052,6 +1052,117 @@ router.get("/episodes/:animeId", async (req, res) => {
   }
 });
 
+// Helper: Parse multi-language data payload from player.php embed URLs
+function parseMultiLangData(embedUrl: string) {
+  let languages: { language: string; link: string }[] = [];
+  let isMultiLang = false;
+
+  try {
+    const dataMatch = embedUrl.match(/data=([^&]+)/);
+    if (dataMatch && dataMatch[1]) {
+      const rawData = decodeURIComponent(dataMatch[1]);
+      const jsonStr = Buffer.from(rawData, "base64").toString("utf-8");
+      const parsedTracks = JSON.parse(jsonStr);
+      if (Array.isArray(parsedTracks)) {
+        languages = parsedTracks.map((t: any) => ({
+          language: t.language || t.lang || "Default",
+          link: (t.link || t.url || "").replace(/\\/g, ""),
+        }));
+        isMultiLang = languages.length > 0;
+      }
+    }
+  } catch (err: any) {
+    console.warn("Error decoding multi-language player data:", err.message);
+  }
+
+  return { languages, isMultiLang };
+}
+
+// Helper: Scrape episode page for video servers and multi-language audio tracks
+async function getEpisodeServersData(epSlug: string, animeId?: string) {
+  let servers: any[] = [];
+  let htmlData = "";
+
+  try {
+    htmlData = await fetchPage(`/episode/${epSlug}/`);
+  } catch {
+    const targetAnimeId = animeId || epSlug.replace(/-(?:(\d+)x)?\d+$/, "").replace(/-ep-\d+$/, "");
+    if (targetAnimeId) {
+      try {
+        htmlData = await fetchPage(`/tv/${targetAnimeId}/`);
+      } catch {
+        // ignore fallback error
+      }
+    }
+  }
+
+  if (htmlData) {
+    const $ = cheerio.load(htmlData);
+    const serverBtns = $(".server-btn").filter((_, el) => {
+      return !$(el).hasClass("season-btn") && !$(el).attr("data-season");
+    });
+
+    serverBtns.each((index, el) => {
+      let serverName = $(el).text().replace(/\s+/g, " ").trim() || `SERVER ${index + 1}`;
+
+      const videoContainer = $(`#options-${index}`).length ? $(`#options-${index}`) : $(".video.aa-tb").eq(index);
+      const iframe = videoContainer.find("iframe");
+      let embedUrl = iframe.attr("src") || iframe.attr("data-src") || "";
+
+      if (!embedUrl) {
+        embedUrl = $("iframe").eq(index).attr("src") || $("iframe").eq(index).attr("data-src") || "";
+      }
+
+      if (embedUrl.startsWith("//")) {
+        embedUrl = "https:" + embedUrl;
+      }
+
+      const { languages, isMultiLang } = parseMultiLangData(embedUrl);
+
+      let defaultEmbed = embedUrl;
+      if (isMultiLang && languages.length > 0) {
+        const preferred = languages.find(l => l.language.toLowerCase() === "japanese") ||
+                          languages.find(l => l.language.toLowerCase() === "english") ||
+                          languages[0];
+        if (preferred) {
+          defaultEmbed = preferred.link;
+        }
+      }
+
+      if (embedUrl || isMultiLang) {
+        servers.push({
+          index,
+          serverName,
+          embedUrl: defaultEmbed || embedUrl || null,
+          rawEmbedUrl: embedUrl || null,
+          isMultiLang,
+          languages,
+        });
+      }
+    });
+
+    if (servers.length === 0) {
+      $("iframe").each((i, el) => {
+        let src = $(el).attr("src") || $(el).attr("data-src") || "";
+        if (src && !src.includes("google") && !src.includes("facebook") && !src.includes("ad")) {
+          if (src.startsWith("//")) src = "https:" + src;
+          const { languages, isMultiLang } = parseMultiLangData(src);
+          servers.push({
+            index: i,
+            serverName: `Server ${i + 1}`,
+            embedUrl: isMultiLang && languages.length > 0 ? languages[0].link : src,
+            rawEmbedUrl: src,
+            isMultiLang,
+            languages,
+          });
+        }
+      });
+    }
+  }
+
+  return servers;
+}
+
 // 10. Video Servers for an episode
 router.get("/servers", async (req, res) => {
   const { ep: epSlug, id: animeId } = req.query as { id?: string; ep: string };
@@ -1066,81 +1177,7 @@ router.get("/servers", async (req, res) => {
   if (cached) return sendCachedResponse(res, cached, ttl);
 
   try {
-    let servers: any[] = [];
-    const targetAnimeId = animeId || epSlug.replace(/-(?:(\d+)x)?\d+$/, "").replace(/-ep-\d+$/, "");
-
-    if (targetAnimeId) {
-      try {
-        const { episodes } = await getEpisodesData(targetAnimeId);
-        const epNumMatch = epSlug.match(/(?:(\d+)x)?(\d+)$/) || epSlug.match(/ep-(\d+)/);
-        const epNum = epNumMatch ? parseInt(epNumMatch[2] || epNumMatch[1], 10) : null;
-
-        const matchedEp = episodes.find(e =>
-          e.slug === epSlug ||
-          e.slug === `ep-${epSlug}` ||
-          String(e.num) === epSlug ||
-          (epNum !== null && e.num === epNum)
-        );
-
-        if (matchedEp && matchedEp.servers && matchedEp.servers.length > 0) {
-          servers = matchedEp.servers.map((s: any, idx: number) => ({
-            index: idx,
-            serverName: s.name ? `${s.name} - ${s.lang || 'Default'}` : `Server ${idx + 1}`,
-            embedUrl: s.url || null,
-            language: s.lang || "Default",
-            isMultiLang: false,
-          }));
-        }
-      } catch (err) {
-        console.warn("Could not get servers from anime page:", err);
-      }
-    }
-
-    if (servers.length === 0) {
-      let data = "";
-      try {
-        data = await fetchPage(`/episode/${epSlug}/`);
-      } catch {
-        if (targetAnimeId) {
-          data = await fetchPage(`/tv/${targetAnimeId}/`);
-        }
-      }
-
-      if (data) {
-        const $ = cheerio.load(data);
-        $(".server-btn").each((index, el) => {
-          const serverNameHeader = $(el).find(".server-name").text().trim() || `SERVER ${index + 1}`;
-          const serverInfo = $(el).find(".server-info").text().trim();
-          const fullName = serverInfo ? `${serverNameHeader} - ${serverInfo}` : serverNameHeader;
-
-          const videoContainer = $(`#options-${index}`).length ? $(`#options-${index}`) : $(".video.aa-tb").eq(index);
-          const iframe = videoContainer.find("iframe");
-          const embedUrl = iframe.attr("src") || iframe.attr("data-src") || "";
-
-          servers.push({
-            index,
-            serverName: fullName,
-            embedUrl: embedUrl || null,
-            isMultiLang: false,
-          });
-        });
-
-        if (servers.length === 0) {
-          $("iframe").each((i, el) => {
-            const src = $(el).attr("src") || $(el).attr("data-src") || "";
-            if (src && !src.includes("google") && !src.includes("facebook") && !src.includes("ad")) {
-              servers.push({
-                index: i,
-                serverName: `Server ${i + 1}`,
-                embedUrl: src,
-                isMultiLang: false,
-              });
-            }
-          });
-        }
-      }
-    }
-
+    const servers = await getEpisodeServersData(epSlug, animeId);
     const payload = { success: true, data: servers };
     await setCacheAsync(cacheKey, payload, ttl);
     sendCachedResponse(res, payload, ttl);
@@ -1174,47 +1211,26 @@ router.get("/stream", async (req, res) => {
     let selectedLanguage: string | null = lang || null;
     const serverIndex = parseInt(serverParam || "0", 10);
 
-    const targetAnimeId = animeId || epSlug.replace(/-(?:(\d+)x)?\d+$/, "").replace(/-ep-\d+$/, "");
-
-    if (targetAnimeId) {
-      try {
-        const { episodes } = await getEpisodesData(targetAnimeId);
-        const epNumMatch = epSlug.match(/(?:(\d+)x)?(\d+)$/) || epSlug.match(/ep-(\d+)/);
-        const epNum = epNumMatch ? parseInt(epNumMatch[2] || epNumMatch[1], 10) : null;
-
-        const matchedEp = episodes.find(e =>
-          e.slug === epSlug ||
-          e.slug === `ep-${epSlug}` ||
-          String(e.num) === epSlug ||
-          (epNum !== null && e.num === epNum)
-        );
-
-        if (matchedEp && matchedEp.servers && matchedEp.servers.length > 0) {
-          const s = matchedEp.servers[serverIndex] || matchedEp.servers[0];
-          embedUrl = s.url || null;
-          selectedLanguage = s.lang || null;
+    const servers = await getEpisodeServersData(epSlug, animeId);
+    if (servers.length > 0) {
+      const s = servers[serverIndex] || servers[0];
+      if (s.isMultiLang && s.languages && s.languages.length > 0) {
+        if (lang) {
+          const match = s.languages.find((l: any) => l.language.toLowerCase() === lang.toLowerCase());
+          if (match) {
+            embedUrl = match.link;
+            selectedLanguage = match.language;
+          }
         }
-      } catch (err) {
-        console.warn("Could not parse stream from anime page:", err);
-      }
-    }
-
-    if (!embedUrl) {
-      let data = "";
-      try {
-        data = await fetchPage(`/episode/${epSlug}/`);
-      } catch {
-        if (targetAnimeId) {
-          data = await fetchPage(`/tv/${targetAnimeId}/`);
+        if (!embedUrl) {
+          const defaultTrack = s.languages.find((l: any) => l.language.toLowerCase() === "japanese") ||
+                               s.languages.find((l: any) => l.language.toLowerCase() === "english") ||
+                               s.languages[0];
+          embedUrl = defaultTrack ? defaultTrack.link : s.embedUrl;
+          selectedLanguage = defaultTrack ? defaultTrack.language : null;
         }
-      }
-
-      if (data) {
-        const $ = cheerio.load(data);
-        const videoContainer = $(`#options-${serverIndex}`).length ? $(`#options-${serverIndex}`) : $(".video.aa-tb").eq(serverIndex);
-        const iframe = videoContainer.find("iframe").length ? videoContainer.find("iframe") : $("iframe").eq(serverIndex);
-
-        embedUrl = iframe.attr("src") || iframe.attr("data-src") || null;
+      } else {
+        embedUrl = s.embedUrl;
       }
     }
 
