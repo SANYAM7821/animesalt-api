@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "regions": ["bom1"],
+  "regions": ["iad1", "sin1", "fra1"],
   "functions": {
     "api/index.ts": {
       "memory": 1024,
