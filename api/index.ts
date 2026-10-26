@@ -253,6 +253,8 @@ async function fetchPage(path: string, options: FetchPageOptions = {}): Promise<
   // 1. Fast Path: Cloudflare Worker Proxy / Scraper Gateway (~150ms)
   const DEFAULT_PROXY_URL = "https://animesalt-proxy.v1nx.workers.dev";
   const proxyGateways: string[] = [];
+
+  // Prioritize default working worker if PROXY_URL is empty or problematic, or test all candidates
   if (process.env.PROXY_URL && process.env.PROXY_URL.trim()) proxyGateways.push(process.env.PROXY_URL.trim());
   if (process.env.SCRAPER_PROXY && process.env.SCRAPER_PROXY.trim()) proxyGateways.push(process.env.SCRAPER_PROXY.trim());
   if (!proxyGateways.includes(DEFAULT_PROXY_URL)) proxyGateways.push(DEFAULT_PROXY_URL);
@@ -274,6 +276,8 @@ async function fetchPage(path: string, options: FetchPageOptions = {}): Promise<
         if (!text.includes("Just a moment...") && !text.includes("cf-browser-verification") && !text.includes("Checking your browser")) {
           return text;
         }
+      } else {
+        console.warn(`Proxy gateway (${gateway}) returned HTTP ${proxyResp.status}, trying next gateway...`);
       }
     } catch (proxyErr: any) {
       console.warn(`Proxy gateway (${gateway}) failed:`, proxyErr.message);

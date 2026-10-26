@@ -239,6 +239,8 @@ async function fetchPage(path2, options = {}) {
         if (!text.includes("Just a moment...") && !text.includes("cf-browser-verification") && !text.includes("Checking your browser")) {
           return text;
         }
+      } else {
+        console.warn(`Proxy gateway (${gateway}) returned HTTP ${proxyResp.status}, trying next gateway...`);
       }
     } catch (proxyErr) {
       console.warn(`Proxy gateway (${gateway}) failed:`, proxyErr.message);
