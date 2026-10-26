@@ -9,7 +9,7 @@ const router = express.Router();
 app.use(cors());
 app.use(express.json());
 
-const BASE_URL = "https://animesalt.me";
+const BASE_URL = "https://animesalt.cx";
 
 // ==========================================
 // Multi-Tier Upstash Redis Replication & Failover Engine
@@ -125,7 +125,7 @@ const CHROME_HEADERS: Record<string, string> = {
   "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
   "Accept-Language": "en-US,en;q=0.9,hi;q=0.8",
   "Cache-Control": "max-age=0",
-  "Referer": "https://animesalt.me/",
+  "Referer": "https://animesalt.cx/",
   "Connection": "keep-alive",
   "sec-ch-ua": '"Not(A:Brand";v="99", "Google Chrome";v="133", "Chromium";v="133"',
   "sec-ch-ua-mobile": "?0",
@@ -141,7 +141,7 @@ const MINIMAL_HEADERS: Record<string, string> = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
   "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
   "Accept-Language": "en-US,en;q=0.9",
-  "Referer": "https://animesalt.me/",
+  "Referer": "https://animesalt.cx/",
   "sec-ch-ua": '"Not(A:Brand";v="99", "Google Chrome";v="133", "Chromium";v="133"',
   "sec-ch-ua-platform": '"Windows"',
 };
@@ -152,7 +152,7 @@ const AJAX_HEADERS: Record<string, string> = {
   "Accept-Language": "en-US,en;q=0.9",
   "Accept-Encoding": "gzip, deflate, br",
   "X-Requested-With": "XMLHttpRequest",
-  "Referer": "https://animesalt.me/",
+  "Referer": "https://animesalt.cx/",
   "sec-ch-ua": '"Not(A:Brand";v="99", "Google Chrome";v="133", "Chromium";v="133"',
   "sec-ch-ua-mobile": "?0",
   "sec-ch-ua-platform": '"Windows"',
