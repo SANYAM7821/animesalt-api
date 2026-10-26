@@ -238,25 +238,21 @@ async function fetchPage(path2, options = {}) {
     const proxiedCandidates = getProxyUrlVariants(gateway, fullUrl);
     for (const proxiedUrl of proxiedCandidates) {
       try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 6e3);
-        const proxyResp = await fetch(proxiedUrl, {
-          method: "GET",
+        const resp = await import_axios.default.get(proxiedUrl, {
+          timeout: 6e3,
           headers: {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9"
           },
-          signal: controller.signal
+          decompress: true
         });
-        clearTimeout(timer);
-        if (proxyResp.ok) {
-          const text = await proxyResp.text();
-          if (!text.includes("Just a moment...") && !text.includes("cf-browser-verification") && !text.includes("Checking your browser")) {
-            if (path2.includes("/episode/") && !text.includes("server-btn")) {
-              continue;
-            }
-            return text;
+        const text = typeof resp.data === "string" ? resp.data : JSON.stringify(resp.data);
+        if (resp.status === 200 && !text.includes("Just a moment...") && !text.includes("cf-browser-verification") && !text.includes("Checking your browser")) {
+          if (path2.includes("/episode/") && !text.includes("server-btn")) {
+            continue;
           }
+          return text;
         }
       } catch (proxyErr) {
         console.warn(`Proxy candidate (${proxiedUrl}) failed:`, proxyErr.message);

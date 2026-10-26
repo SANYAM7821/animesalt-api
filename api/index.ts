@@ -277,32 +277,29 @@ async function fetchPage(path: string, options: FetchPageOptions = {}): Promise<
     const proxiedCandidates = getProxyUrlVariants(gateway, fullUrl);
     for (const proxiedUrl of proxiedCandidates) {
       try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 6000);
-
-        const proxyResp = await fetch(proxiedUrl, {
-          method: "GET",
+        const resp = await axios.get(proxiedUrl, {
+          timeout: 6000,
           headers: {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
           },
-          signal: controller.signal,
+          decompress: true,
         });
-        clearTimeout(timer);
 
-        if (proxyResp.ok) {
-          const text = await proxyResp.text();
-          if (
-            !text.includes("Just a moment...") &&
-            !text.includes("cf-browser-verification") &&
-            !text.includes("Checking your browser")
-          ) {
-            // Episode pages on AnimeSalt strictly contain server buttons (.server-btn)
-            if (path.includes("/episode/") && !text.includes("server-btn")) {
-              continue; // Candidate returned non-episode page
-            }
-            return text;
+        const text = typeof resp.data === "string" ? resp.data : JSON.stringify(resp.data);
+
+        if (
+          resp.status === 200 &&
+          !text.includes("Just a moment...") &&
+          !text.includes("cf-browser-verification") &&
+          !text.includes("Checking your browser")
+        ) {
+          // Episode pages on AnimeSalt strictly contain server buttons (.server-btn)
+          if (path.includes("/episode/") && !text.includes("server-btn")) {
+            continue; // Candidate returned non-episode page
           }
+          return text;
         }
       } catch (proxyErr: any) {
         console.warn(`Proxy candidate (${proxiedUrl}) failed:`, proxyErr.message);
