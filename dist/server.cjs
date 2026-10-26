@@ -242,7 +242,7 @@ async function fetchPage(path2, options = {}) {
         if (proxyResp.ok) {
           const text = await proxyResp.text();
           if (!text.includes("Just a moment...") && !text.includes("cf-browser-verification") && !text.includes("Checking your browser")) {
-            if (path2.includes("/episode/") && !text.includes("server-btn") && !text.includes("options-")) {
+            if (path2.includes("/episode/") && !text.includes("server-btn")) {
               continue;
             }
             return text;

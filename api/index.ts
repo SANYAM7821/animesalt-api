@@ -286,8 +286,9 @@ async function fetchPage(path: string, options: FetchPageOptions = {}): Promise<
             !text.includes("cf-browser-verification") &&
             !text.includes("Checking your browser")
           ) {
-            if (path.includes("/episode/") && !text.includes("server-btn") && !text.includes("options-")) {
-              continue; // Candidate returned homepage instead of requested episode page
+            // Episode pages on AnimeSalt strictly contain server buttons (.server-btn)
+            if (path.includes("/episode/") && !text.includes("server-btn")) {
+              continue; // Candidate returned non-episode page (e.g. homepage or fallback)
             }
             return text;
           }
