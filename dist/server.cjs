@@ -220,10 +220,13 @@ async function fetchPage(path2, options = {}) {
     fullUrl = urlObj.toString();
   }
   const DEFAULT_PROXY_URL = "https://animesalt-proxy.v1nx.workers.dev";
-  const proxyGateway = process.env.PROXY_URL || process.env.SCRAPER_PROXY || DEFAULT_PROXY_URL;
-  if (proxyGateway) {
+  const proxyGateways = [];
+  if (process.env.PROXY_URL && process.env.PROXY_URL.trim()) proxyGateways.push(process.env.PROXY_URL.trim());
+  if (process.env.SCRAPER_PROXY && process.env.SCRAPER_PROXY.trim()) proxyGateways.push(process.env.SCRAPER_PROXY.trim());
+  if (!proxyGateways.includes(DEFAULT_PROXY_URL)) proxyGateways.push(DEFAULT_PROXY_URL);
+  for (const gateway of proxyGateways) {
     try {
-      const proxiedUrl = buildProxyUrl(proxyGateway, fullUrl);
+      const proxiedUrl = buildProxyUrl(gateway, fullUrl);
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 6e3);
       const proxyResp = await fetch(proxiedUrl, {
@@ -236,13 +239,9 @@ async function fetchPage(path2, options = {}) {
         if (!text.includes("Just a moment...") && !text.includes("cf-browser-verification") && !text.includes("Checking your browser")) {
           return text;
         }
-      } else if (proxyResp.status === 404) {
-        const notFoundErr = new Error("Page not found (404)");
-        notFoundErr.status = 404;
-        throw notFoundErr;
       }
     } catch (proxyErr) {
-      if (proxyErr.status === 404) throw proxyErr;
+      console.warn(`Proxy gateway (${gateway}) failed:`, proxyErr.message);
     }
   }
   const timeoutMs = options.timeoutMs || 6e3;
