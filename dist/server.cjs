@@ -1000,6 +1000,41 @@ async function getEpisodeServersData(epSlug, animeId) {
   }
   return servers;
 }
+router.get("/test-servers", async (req, res) => {
+  const epSlug = req.query.ep || "jujutsu-kaisen-1x3";
+  try {
+    const htmlData = await fetchPage(`/episode/${epSlug}/`);
+    const $ = cheerio.load(htmlData);
+    const serverBtns = $(".server-btn").filter((_, el) => !$(el).hasClass("season-btn") && !$(el).attr("data-season"));
+    const details = [];
+    serverBtns.each((i, el) => {
+      const optEl = $(`#options-${i}`);
+      const videoEl = $(".video.aa-tb").eq(i);
+      const videoContainer = optEl.length ? optEl : videoEl;
+      const iframe = videoContainer.find("iframe");
+      details.push({
+        index: i,
+        name: $(el).text().replace(/\s+/g, " ").trim(),
+        optFound: optEl.length,
+        videoFound: videoEl.length,
+        iframeFound: iframe.length,
+        src: iframe.attr("src") || null,
+        dataSrc: iframe.attr("data-src") || null
+      });
+    });
+    const parsedServers = await getEpisodeServersData(epSlug);
+    res.json({
+      success: true,
+      htmlLength: htmlData.length,
+      hasServerBtn: htmlData.includes("server-btn"),
+      serverBtnsCount: serverBtns.length,
+      details,
+      parsedServers
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 router.get("/servers", async (req, res) => {
   const { ep: epSlug, id: animeId } = req.query;
   if (!epSlug) return res.status(400).json({ success: false, error: "Episode slug (ep) is required" });
