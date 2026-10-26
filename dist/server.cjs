@@ -1006,6 +1006,39 @@ async function getEpisodeServersData(epSlug, animeId) {
   }
   return servers;
 }
+router.get("/test-servers", async (req, res) => {
+  const epSlug = req.query.ep || "jujutsu-kaisen-1x3";
+  const fullUrl = `https://animesalt.cx/episode/${epSlug}/`;
+  const DEFAULT_PROXY_URL = "https://animesalt-proxy.v1nx.workers.dev";
+  const proxyGateways = [];
+  if (process.env.PROXY_URL && process.env.PROXY_URL.trim()) proxyGateways.push(process.env.PROXY_URL.trim());
+  if (process.env.SCRAPER_PROXY && process.env.SCRAPER_PROXY.trim()) proxyGateways.push(process.env.SCRAPER_PROXY.trim());
+  if (!proxyGateways.includes(DEFAULT_PROXY_URL)) proxyGateways.push(DEFAULT_PROXY_URL);
+  const candidateResults = [];
+  for (const gateway of proxyGateways) {
+    const candidates = getProxyUrlVariants(gateway, fullUrl);
+    for (const candUrl of candidates) {
+      try {
+        const t0 = performance.now();
+        const resp = await fetch(candUrl, { method: "GET" });
+        const text = await resp.text();
+        const ms = Math.round(performance.now() - t0);
+        candidateResults.push({
+          candUrl,
+          status: resp.status,
+          ms,
+          len: text.length,
+          hasServerBtn: text.includes("server-btn"),
+          isChallenge: text.includes("Just a moment...") || text.includes("cf-browser-verification"),
+          snippet: text.substring(0, 300)
+        });
+      } catch (err) {
+        candidateResults.push({ candUrl, error: err.message });
+      }
+    }
+  }
+  res.json({ epSlug, fullUrl, candidateResults });
+});
 router.get("/servers", async (req, res) => {
   const { ep: epSlug, id: animeId } = req.query;
   if (!epSlug) return res.status(400).json({ success: false, error: "Episode slug (ep) is required" });
