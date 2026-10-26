@@ -210,6 +210,10 @@ function getProxyUrlVariants(gateway, targetUrl) {
   }
   return Array.from(new Set(variants));
 }
+function buildProxyUrl(gateway, targetUrl) {
+  const variants = getProxyUrlVariants(gateway, targetUrl);
+  return variants[0] || targetUrl;
+}
 async function fetchPage(path2, options = {}) {
   const isAjax = !!options.isAjax;
   let fullUrl = path2.startsWith("http") ? path2 : `${BASE_URL}${path2.startsWith("/") ? "" : "/"}${path2}`;

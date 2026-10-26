@@ -239,6 +239,11 @@ function getProxyUrlVariants(gateway: string, targetUrl: string): string[] {
   return Array.from(new Set(variants));
 }
 
+function buildProxyUrl(gateway: string, targetUrl: string): string {
+  const variants = getProxyUrlVariants(gateway, targetUrl);
+  return variants[0] || targetUrl;
+}
+
 /**
  * Resilient page fetcher utilizing Node native fetch (Undici TLS engine)
  * with multi-profile header fallback and automatic Axios backup.
