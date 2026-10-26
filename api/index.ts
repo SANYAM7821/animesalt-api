@@ -282,7 +282,10 @@ async function fetchPage(path: string, options: FetchPageOptions = {}): Promise<
 
         const proxyResp = await fetch(proxiedUrl, {
           method: "GET",
-          headers: MINIMAL_HEADERS,
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          },
           signal: controller.signal,
         });
         clearTimeout(timer);
@@ -296,7 +299,7 @@ async function fetchPage(path: string, options: FetchPageOptions = {}): Promise<
           ) {
             // Episode pages on AnimeSalt strictly contain server buttons (.server-btn)
             if (path.includes("/episode/") && !text.includes("server-btn")) {
-              continue; // Candidate returned non-episode page (e.g. homepage or fallback)
+              continue; // Candidate returned non-episode page
             }
             return text;
           }
