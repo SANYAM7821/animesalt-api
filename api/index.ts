@@ -251,7 +251,8 @@ async function fetchPage(path: string, options: FetchPageOptions = {}): Promise<
   }
 
   // 1. Fast Path: Cloudflare Worker Proxy / Scraper Gateway (~150ms)
-  const proxyGateway = process.env.PROXY_URL || process.env.SCRAPER_PROXY || "";
+  const DEFAULT_PROXY_URL = "https://animesalt-proxy.v1nx.workers.dev";
+  const proxyGateway = process.env.PROXY_URL || process.env.SCRAPER_PROXY || DEFAULT_PROXY_URL;
   if (proxyGateway) {
     try {
       const proxiedUrl = buildProxyUrl(proxyGateway, fullUrl);

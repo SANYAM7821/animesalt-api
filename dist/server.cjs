@@ -219,7 +219,8 @@ async function fetchPage(path2, options = {}) {
     }
     fullUrl = urlObj.toString();
   }
-  const proxyGateway = process.env.PROXY_URL || process.env.SCRAPER_PROXY || "";
+  const DEFAULT_PROXY_URL = "https://animesalt-proxy.v1nx.workers.dev";
+  const proxyGateway = process.env.PROXY_URL || process.env.SCRAPER_PROXY || DEFAULT_PROXY_URL;
   if (proxyGateway) {
     try {
       const proxiedUrl = buildProxyUrl(proxyGateway, fullUrl);
