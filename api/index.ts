@@ -223,13 +223,9 @@ function buildProxyUrl(gateway: string, targetUrl: string): string {
   if (cleanGateway.endsWith("=")) {
     return `${cleanGateway}${encodeURIComponent(targetUrl)}`;
   }
-  try {
-    const parsed = new URL(targetUrl);
-    return `${cleanGateway}${parsed.pathname}${parsed.search}`;
-  } catch {
-    const pathAndQuery = targetUrl.replace(/^https?:\/\/[^/]+/, "");
-    return `${cleanGateway}${pathAndQuery.startsWith("/") ? "" : "/"}${pathAndQuery}`;
-  }
+  // Standard Cloudflare Worker format: query parameter ?url=
+  const separator = cleanGateway.includes("?") ? "&" : "?";
+  return `${cleanGateway}${separator}url=${encodeURIComponent(targetUrl)}`;
 }
 
 /**

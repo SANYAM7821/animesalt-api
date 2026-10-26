@@ -193,19 +193,14 @@ function buildProxyUrl(gateway, targetUrl) {
     return cleanGateway.replace("%s", encodeURIComponent(targetUrl));
   }
   if (cleanGateway.includes("url=")) {
-    const separator = cleanGateway.includes("?") ? "&" : "?";
-    return `${cleanGateway}${separator}url=${encodeURIComponent(targetUrl)}`;
+    const separator2 = cleanGateway.includes("?") ? "&" : "?";
+    return `${cleanGateway}${separator2}url=${encodeURIComponent(targetUrl)}`;
   }
   if (cleanGateway.endsWith("=")) {
     return `${cleanGateway}${encodeURIComponent(targetUrl)}`;
   }
-  try {
-    const parsed = new URL(targetUrl);
-    return `${cleanGateway}${parsed.pathname}${parsed.search}`;
-  } catch {
-    const pathAndQuery = targetUrl.replace(/^https?:\/\/[^/]+/, "");
-    return `${cleanGateway}${pathAndQuery.startsWith("/") ? "" : "/"}${pathAndQuery}`;
-  }
+  const separator = cleanGateway.includes("?") ? "&" : "?";
+  return `${cleanGateway}${separator}url=${encodeURIComponent(targetUrl)}`;
 }
 async function fetchPage(path2, options = {}) {
   const isAjax = !!options.isAjax;
