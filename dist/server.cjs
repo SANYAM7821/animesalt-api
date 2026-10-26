@@ -1009,6 +1009,25 @@ router.get("/servers", async (req, res) => {
   const forceRefresh = req.query.refresh === "true" || req.query.force === "true";
   const isOngoing = req.query.ongoing === "true" || req.query.status === "ongoing";
   const ttl = isOngoing ? 43200 : 2592e3;
+  if (req.query.debug === "true") {
+    try {
+      const html = await fetchPage(`/episode/${epSlug}/`);
+      const $ = cheerio.load(html);
+      const serverBtns = $(".server-btn").filter((_, el) => !$(el).hasClass("season-btn") && !$(el).attr("data-season"));
+      const parsed = await getEpisodeServersData(epSlug, animeId);
+      return res.json({
+        debugMode: true,
+        epSlug,
+        htmlLength: html.length,
+        hasServerBtn: html.includes("server-btn"),
+        serverBtnsCount: serverBtns.length,
+        snippet: html.substring(0, 400),
+        parsed
+      });
+    } catch (err) {
+      return res.status(500).json({ debugError: err.message });
+    }
+  }
   const cacheKey = `servers_${animeId || "none"}_${epSlug}`;
   const cached = await getCachedAsync(cacheKey, forceRefresh);
   if (cached) return sendCachedResponse(res, cached, ttl);
