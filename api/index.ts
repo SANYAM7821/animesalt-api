@@ -1190,41 +1190,41 @@ async function getEpisodeServersData(epSlug: string, animeId?: string) {
 
 router.get("/test-servers", async (req, res) => {
   const epSlug = (req.query.ep as string) || "jujutsu-kaisen-1x3";
-  try {
-    const htmlData = await fetchPage(`/episode/${epSlug}/`);
-    const $ = cheerio.load(htmlData);
-    const serverBtns = $(".server-btn").filter((_, el) => !$(el).hasClass("season-btn") && !$(el).attr("data-season"));
+  const fullUrl = `https://animesalt.cx/episode/${epSlug}/`;
 
-    const details = [];
-    serverBtns.each((i, el) => {
-      const optEl = $(`#options-${i}`);
-      const videoEl = $(".video.aa-tb").eq(i);
-      const videoContainer = optEl.length ? optEl : videoEl;
-      const iframe = videoContainer.find("iframe");
-      details.push({
-        index: i,
-        name: $(el).text().replace(/\s+/g, " ").trim(),
-        optFound: optEl.length,
-        videoFound: videoEl.length,
-        iframeFound: iframe.length,
-        src: iframe.attr("src") || null,
-        dataSrc: iframe.attr("data-src") || null
-      });
-    });
+  const DEFAULT_PROXY_URL = "https://animesalt-proxy.v1nx.workers.dev";
+  const proxyGateways: string[] = [];
+  if (process.env.PROXY_URL && process.env.PROXY_URL.trim()) proxyGateways.push(process.env.PROXY_URL.trim());
+  if (process.env.SCRAPER_PROXY && process.env.SCRAPER_PROXY.trim()) proxyGateways.push(process.env.SCRAPER_PROXY.trim());
+  if (!proxyGateways.includes(DEFAULT_PROXY_URL)) proxyGateways.push(DEFAULT_PROXY_URL);
 
-    const parsedServers = await getEpisodeServersData(epSlug);
+  const candidateResults: any[] = [];
 
-    res.json({
-      success: true,
-      htmlLength: htmlData.length,
-      hasServerBtn: htmlData.includes("server-btn"),
-      serverBtnsCount: serverBtns.length,
-      details,
-      parsedServers
-    });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  for (const gateway of proxyGateways) {
+    const candidates = getProxyUrlVariants(gateway, fullUrl);
+    for (const candUrl of candidates) {
+      try {
+        const t0 = performance.now();
+        const resp = await fetch(candUrl, { method: "GET", headers: MINIMAL_HEADERS });
+        const text = await resp.text();
+        const ms = Math.round(performance.now() - t0);
+        candidateResults.push({
+          candUrl,
+          status: resp.status,
+          ms,
+          len: text.length,
+          hasServerBtn: text.includes("server-btn"),
+          hasOptions: text.includes("options-"),
+          isChallenge: text.includes("Just a moment...") || text.includes("cf-browser-verification"),
+          snippet: text.substring(0, 300)
+        });
+      } catch (err: any) {
+        candidateResults.push({ candUrl, error: err.message });
+      }
+    }
   }
+
+  res.json({ epSlug, fullUrl, candidateResults });
 });
 
 // 10. Video Servers for an episode
