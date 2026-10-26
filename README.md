@@ -244,17 +244,17 @@ export default {
   async fetch(request) {
     const url = new URL(request.url);
 
-    // 1. Support query parameter: ?url=https://animesalt.me/...
+    // 1. Support query parameter: ?url=https://animesalt.cx/...
     let target = url.searchParams.get("url");
 
-    // 2. Support path-based target: /https://animesalt.me/...
+    // 2. Support path-based target: /https://animesalt.cx/...
     if (!target && url.pathname.startsWith("/http")) {
       target = url.pathname.slice(1) + url.search;
     }
 
     // 3. Support direct reverse proxy path: /tv/naruto/ or /wp-admin/...
     if (!target) {
-      target = "https://animesalt.me" + url.pathname + url.search;
+      target = "https://animesalt.cx" + url.pathname + url.search;
     }
 
     try {
@@ -264,7 +264,7 @@ export default {
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
           "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
           "Accept-Language": "en-US,en;q=0.9",
-          "Referer": "https://animesalt.me/",
+          "Referer": "https://animesalt.cx/",
         },
       });
 
